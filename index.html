@@ -91,6 +91,21 @@
     .listing-row .key{color:var(--mu)}
     .listing-row .val{font-weight:700;text-align:right}
 
+    /* PRODUCT DETAILS (Phase 1 — online identification first) */
+    .pd-section{background:var(--sf);border-radius:16px;padding:16px;margin-bottom:12px}
+    .pd-section .section-label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:10px}
+    .pd-title{font-size:18px;font-weight:800;margin-bottom:6px;line-height:1.3}
+    .pd-meta-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bd);font-size:13px;gap:12px}
+    .pd-meta-row:last-child{border-bottom:none}
+    .pd-meta-row .key{color:var(--mu);flex-shrink:0}
+    .pd-meta-row .val{font-weight:700;text-align:right}
+    .pd-market-range{font-size:22px;font-weight:800;color:var(--gd);margin:8px 0 4px}
+    .pd-market-sub{font-size:12px;color:var(--mu)}
+    .pd-status-banner{display:flex;align-items:center;gap:8px;font-weight:800;padding:10px 12px;border-radius:10px;margin-bottom:10px;font-size:14px}
+    .pd-status-banner.found{background:rgba(0,230,118,.12);color:var(--sv)}
+    .pd-status-banner.notfound{background:rgba(255,171,0,.12);color:var(--gd)}
+    .pd-status-banner.error{background:rgba(136,136,136,.18);color:var(--mu)}
+
     /* TOAST */
     #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
     #toast.on{opacity:1}
@@ -264,6 +279,14 @@
 <div class="scr" id="scr-result">
   <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← New Search</button>
   <div id="result-content"></div>
+</div>
+
+<!-- PRODUCT DETAILS SCREEN (Phase 1 — online identification first) -->
+<div class="scr" id="scr-product-details">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← New Search</button>
+  <div id="pd-identity"></div>
+  <div id="pd-market"></div>
+  <div id="pd-inventory-status"></div>
 </div>
 
 <!-- NOT FOUND SCREEN -->
@@ -529,32 +552,166 @@ function searchManual(){
   searchUPC(v);
 }
 
-// ── SEARCH SELLBRITE via Railway Proxy ───────────────────────
+// ── PHASE 1: ONLINE IDENTIFICATION FIRST, THEN SELLBRITE STATUS ──────────
+// Shared entry point for BOTH barcode scan and manual UPC entry (both
+// already called this same function before Phase 1 — that hasn't
+// changed). What changed is the meaning of a "search": Sellbrite no
+// longer decides whether the product exists. Online (eBay) identity/
+// market data is fetched FIRST and always shown; Sellbrite is checked
+// independently afterward as a separate, non-gating status section.
+// Deliberately does NOT touch showProductFromProxy/showNotFound — those
+// remain exactly as before for the Photo BETA's own confirmUpcInSellbriteAndShow.
 async function searchUPC(upc){
   if(!isAuthenticated()){ showLoginScreen(); return; }
-  showScreen('scr-load');
   const upcClean = upc.replace(/\D/g,'');
-  $('load-msg').textContent = 'Searching Sellbrite for UPC: ' + upcClean + '...';
+  if(!upcClean){ toast('⚠️ Enter a UPC'); return; }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Identifying product online...';
+
+  const onlineResult = await identifyUpcOnline(upcClean);
+
+  renderProductDetails(upcClean, onlineResult);
+  showScreen('scr-product-details');
+
+  // Independent, non-blocking — never gates the screen above.
+  loadSellbriteStatus(upcClean);
+}
+
+// Escapes externally-sourced text (eBay titles/brands/categories, Sellbrite
+// SKUs) before it's placed into innerHTML — the UPC itself never needs
+// this since it's already digit-only by construction.
+function escapeHtml(str){
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+// ── ONLINE IDENTIFICATION (BETA backend only — never SB_PROXY, never
+// the live production backend directly) ──────────────────────────────
+async function identifyUpcOnline(upc){
+  try {
+    const res = await identifyPhotoFetch('/api/identify-by-upc?upc=' + encodeURIComponent(upc));
+
+    if(res.status === 401 || res.status === 403){
+      toast('🧪 Online identification is unavailable right now.', 3500);
+      return { identified: false };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok || data.status === 'error'){
+      return { identified: false };
+    }
+    return data; // {status, identified, identity?, market?}
+
+  } catch(err){
+    console.error('identifyUpcOnline error:', err);
+    return { identified: false };
+  }
+}
+
+function renderProductDetails(upc, onlineResult){
+  const identityEl = $('pd-identity');
+  const marketEl = $('pd-market');
+
+  if(onlineResult && onlineResult.identified && onlineResult.identity){
+    const idy = onlineResult.identity;
+    identityEl.innerHTML = `
+      <div class="pd-section">
+        <div class="section-label">Product Identified — Online (eBay)</div>
+        <div class="pd-title">${escapeHtml(idy.title || 'Unknown title')}</div>
+        <div class="pd-meta-row"><span class="key">Brand</span><span class="val">${escapeHtml(idy.brand || '—')}</span></div>
+        <div class="pd-meta-row"><span class="key">UPC</span><span class="val">${escapeHtml(idy.upc || upc)}</span></div>
+        ${idy.category ? `<div class="pd-meta-row"><span class="key">Category</span><span class="val">${escapeHtml(idy.category)}</span></div>` : ''}
+        ${idy.condition ? `<div class="pd-meta-row"><span class="key">Condition</span><span class="val">${escapeHtml(idy.condition)}</span></div>` : ''}
+      </div>`;
+
+    const mkt = (onlineResult.market && onlineResult.market.ebay) || {};
+    const matches = Number(mkt.matches || 0);
+    marketEl.innerHTML = `
+      <div class="pd-section">
+        <div class="section-label">Online Market Data — eBay</div>
+        ${matches > 0 ? `
+          <div style="font-size:13px;color:var(--mu);margin-bottom:6px">${matches} relevant active listing${matches===1?'':'s'}</div>
+          <div class="pd-market-range">$${Number(mkt.low||0).toFixed(2)} – $${Number(mkt.high||0).toFixed(2)}</div>
+          <div class="pd-market-sub">Average asking price: $${Number(mkt.average||0).toFixed(2)}</div>
+          <div class="pd-market-sub" style="margin-top:8px">Based on ${matches} active eBay listing${matches===1?'':'s'} — not a single listing's price.</div>
+        ` : `<div style="font-size:13px;color:var(--mu)">No qualifying active eBay listings found for pricing.</div>`}
+      </div>`;
+
+  } else {
+    identityEl.innerHTML = `
+      <div class="pd-section">
+        <div class="pd-status-banner error">⚠️ Could not identify this UPC online.</div>
+        <div class="pd-meta-row"><span class="key">UPC</span><span class="val">${escapeHtml(upc)}</span></div>
+      </div>`;
+    marketEl.innerHTML = '';
+  }
+}
+
+// ── SELLBRITE STATUS — independent, never gates Product Details ─────────
+// Reuses the EXISTING savvyAuthFetch()/SB_PROXY /sb/search integration,
+// unmodified — the same call the pre-Phase-1 searchUPC() used to make
+// directly. Only what happens with the RESULT has changed.
+async function loadSellbriteStatus(upc){
+  const el = $('pd-inventory-status');
+  el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div><div style="font-size:13px;color:var(--mu)">Checking Sellbrite...</div></div>`;
 
   try {
-    const res = await savvyAuthFetch('/sb/search?upc=' + encodeURIComponent(upcClean));
-    const data = await res.json();
+    const res = await savvyAuthFetch('/sb/search?upc=' + encodeURIComponent(upc));
 
-    if(res.status === 404 || data.status === 'not_found'){
-      showNotFound('No product found with UPC: ' + upcClean + '\n\nMake sure the UPC is part of your SKU in Sellbrite (e.g. NIK-' + upcClean + '-1PK)', upcClean);
+    if(res.status === 404){
+      renderSellbriteStatus('notfound');
       return;
     }
 
+    const data = await res.json().catch(() => ({}));
+
     if(!res.ok || data.status === 'error'){
-      throw new Error(data.error || 'Search failed');
+      renderSellbriteStatus('error');
+      return;
+    }
+    if(data.status === 'not_found'){
+      renderSellbriteStatus('notfound');
+      return;
     }
 
-    await showProductFromProxy(data, upcClean);
+    let products = data.products;
+    if(!products && data.product){ products = [ {...data.product, inventory: data.inventory} ]; }
+    products = products || [];
+
+    if(products.length === 0){
+      renderSellbriteStatus('notfound');
+      return;
+    }
+
+    renderSellbriteStatus('found', products);
 
   } catch(err){
-    console.error('Search error:', err);
-    toast('❌ Error: ' + (err.message || err));
-    showScreen('scr-home');
+    console.error('Sellbrite status error:', err);
+    renderSellbriteStatus('error');
+  }
+}
+
+function renderSellbriteStatus(state, products){
+  const el = $('pd-inventory-status');
+
+  if(state === 'found' && products && products.length){
+    const cards = products.map(p => {
+      const inv = p.inventory || {};
+      return `
+      <div class="pd-status-banner found">✓ Already Listed in Sellbrite</div>
+      <div class="pd-meta-row"><span class="key">SKU</span><span class="val">${escapeHtml(p.sku || '—')}</span></div>
+      <div class="pd-meta-row"><span class="key">Available</span><span class="val">${Number(inv.total_quantity || 0)}</span></div>
+      <div class="pd-meta-row"><span class="key">On Hand</span><span class="val">${Number(inv.total_on_hand || 0)}</span></div>`;
+    }).join('<div style="height:14px"></div>');
+    el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div>${cards}</div>`;
+
+  } else if(state === 'error'){
+    el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div><div class="pd-status-banner error">⚠ Sellbrite Status Unavailable</div></div>`;
+
+  } else {
+    el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div><div class="pd-status-banner notfound">⚠ Not Currently Listed in Sellbrite</div></div>`;
   }
 }
 
