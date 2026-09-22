@@ -696,6 +696,58 @@ function deriveBrandCandidates(identity){
   return candidates;
 }
 
+// ── PACK-COUNT EXTRACTION — deterministic, text-only ─────────────────────
+// Deliberately distinguishes PACK quantity ("1 Pack", "3-Pack", "Pack of
+// 3") from PRODUCT count inside a single unit ("60 Count", "60ct") — the
+// two are easy to conflate and mean completely different things. Only
+// explicit pack-shaped phrases are matched; "60 Count"/"60ct" alone never
+// produces a pack count of 60. Returns null (not a guessed default) when
+// no explicit pack phrase is present — an unknown pack count must never
+// be treated as "1" or any other assumed value.
+function extractPackCount(text){
+  const t = String(text || '');
+  let m = t.match(/\bpack\s+of\s+(\d+)\b/i);
+  if(m) return parseInt(m[1], 10);
+  m = t.match(/\b(\d+)\s*-?\s*pack\b/i);
+  if(m) return parseInt(m[1], 10);
+  return null;
+}
+
+// Reads the pack count directly off a Sellbrite SKU's own trailing
+// number (our SKUs are always PREFIX-UPC-N or PREFIX-UPC-Npk — see
+// /sb/search's own documented convention, unchanged).
+function extractPackCountFromSku(sku){
+  const m = String(sku || '').match(/-(\d+)(?:pk)?$/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// ── DETERMINISTIC VARIANT MATCHING ───────────────────────────────────────
+// /sb/search's own fast path (server-side, unmodified — see investigation)
+// races up to 24 parallel per-pack-size SKU lookups and keeps only
+// whichever ONE responds first, discarding the rest before the response
+// is ever sent. When more than one pack-size variant exists for the same
+// UPC/prefix (as with this fixture: -1 and -3), that race is decided by
+// network response timing, not product identity — the server response
+// alone cannot be trusted as "the right variant." This function is the
+// frontend-only correction: given the product(s) /sb/search actually
+// returned and the pack count confidently extracted from the ONLINE
+// identity, it decides whether what came back can be trusted.
+// Inventory quantity is never used to pick a variant — identity
+// correctness (pack count) always outranks stock level, per the explicit
+// "IMPORTANT INVENTORY RULE" from this investigation: a 0-inventory
+// correct variant is still correct; a well-stocked wrong variant is
+// still wrong.
+function selectVariantByPackCount(products, expectedPack){
+  if(!products || products.length === 0) return { matched: [], expectedPack };
+  if(expectedPack == null) return { matched: products, expectedPack }; // can't verify — nothing to contradict it with
+  const matched = products.filter(p => {
+    const skuPack = extractPackCountFromSku(p.sku);
+    if(skuPack != null) return skuPack === expectedPack;
+    return extractPackCount(p.name || p.title || '') === expectedPack;
+  });
+  return { matched, expectedPack };
+}
+
 // ── SELLBRITE STATUS — independent, never gates Product Details ─────────
 // Reuses the EXISTING savvyAuthFetch()/SB_PROXY /sb/search integration,
 // unmodified — same endpoint, same contract, same response shapes. Only
@@ -759,7 +811,19 @@ async function loadSellbriteStatus(upc, identity){
         return;
       }
 
-      renderSellbriteStatus('found', products);
+      // Deterministic pack-variant check — see selectVariantByPackCount().
+      // Never presents a pack-mismatched result as a confirmed match, and
+      // never re-queries Sellbrite to "fix" this (would reintroduce the
+      // pagination/rate-limit risk this whole fix exists to avoid).
+      const expectedPack = extractPackCount((identity && identity.title) || '');
+      const { matched } = selectVariantByPackCount(products, expectedPack);
+
+      if(expectedPack != null && matched.length === 0){
+        renderSellbriteStatus('mismatch', products, expectedPack);
+        return;
+      }
+
+      renderSellbriteStatus('found', matched.length ? matched : products);
       return;
 
     } catch(err){
@@ -770,7 +834,7 @@ async function loadSellbriteStatus(upc, identity){
   }
 }
 
-function renderSellbriteStatus(state, products){
+function renderSellbriteStatus(state, products, expectedPack){
   const el = $('pd-inventory-status');
 
   if(state === 'found' && products && products.length){
@@ -783,6 +847,23 @@ function renderSellbriteStatus(state, products){
       <div class="pd-meta-row"><span class="key">On Hand</span><span class="val">${Number(inv.total_on_hand || 0)}</span></div>`;
     }).join('<div style="height:14px"></div>');
     el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div>${cards}</div>`;
+
+  } else if(state === 'mismatch'){
+    // Sellbrite responded successfully and something exists for this
+    // UPC/prefix, but none of it matches the pack size identified
+    // online — never present this as a confirmed "already listed" match.
+    const cards = (products || []).map(p => {
+      const inv = p.inventory || {};
+      const pack = extractPackCountFromSku(p.sku);
+      return `
+      <div class="pd-meta-row"><span class="key">${pack != null ? pack + '-Pack' : 'Listing'}</span><span class="val">${escapeHtml(p.sku || '—')}</span></div>
+      <div class="pd-meta-row"><span class="key">Available</span><span class="val">${Number(inv.total_quantity || 0)}</span></div>`;
+    }).join('<div style="height:10px"></div>');
+    el.innerHTML = `<div class="pd-section">
+      <div class="section-label">Inventory Status</div>
+      <div class="pd-status-banner notfound">⚠ Sellbrite listing found, but not for the identified ${escapeHtml(String(expectedPack))}-Pack</div>
+      <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Inventory lookup could not confirm the identified product. Found instead:</div>
+      ${cards}</div>`;
 
   } else if(state === 'error'){
     el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div><div class="pd-status-banner error">⚠ Sellbrite Status Unavailable</div></div>`;
