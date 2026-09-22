@@ -1,0 +1,1718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Inventory">
+  <title>Inventory Manager</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg:#0d0d0d;--sf:#1a1a1a;--sf2:#242424;--bd:#333;
+      --tx:#fff;--mu:#888;--sv:#00e676;--dw:#ff1744;--ac:#ff6b00;--gd:#ffab00;
+    }
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden}
+    .hdr{background:var(--sf);border-bottom:1px solid var(--bd);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+    .hdr-logo{display:flex;align-items:center;gap:10px}
+    .hdr-logo img{width:32px;height:32px;border-radius:8px}
+    .hdr-title{font-size:18px;font-weight:800;color:var(--tx)}
+    .hdr-title span{color:var(--ac)}
+    .hdr-back{background:none;border:none;color:var(--mu);font-size:14px;cursor:pointer;padding:6px}
+
+    .scr{display:none;min-height:calc(100vh - 57px);padding:16px}
+    .scr.on{display:block}
+
+    /* HOME */
+    .scan-card{background:var(--sf);border:2px solid var(--ac);border-radius:16px;padding:24px;text-align:center;margin-bottom:16px;cursor:pointer;active:opacity:.8}
+    .scan-card .icon{font-size:48px;margin-bottom:12px}
+    .scan-card h2{font-size:20px;font-weight:800;margin-bottom:6px}
+    .scan-card p{font-size:13px;color:var(--mu)}
+
+    /* PHOTO IDENTIFY — BETA */
+    .photo-card{background:var(--sf);border:2px solid var(--gd);border-radius:16px;padding:24px;text-align:center;margin-bottom:16px;cursor:pointer}
+    .photo-card .icon{font-size:48px;margin-bottom:12px}
+    .photo-card h2{font-size:20px;font-weight:800;margin-bottom:6px}
+    .photo-card p{font-size:13px;color:var(--mu)}
+    .beta-tag{display:inline-block;background:var(--gd);color:#000;font-size:10px;font-weight:800;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px;vertical-align:middle}
+    .photo-capture-row{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+    .photo-preview{width:100%;border-radius:12px;margin-bottom:16px;max-height:300px;object-fit:contain;background:var(--sf)}
+    .candidate-card{background:var(--sf);border-radius:16px;padding:14px;margin-bottom:12px;display:flex;gap:12px;align-items:flex-start}
+    .candidate-card .img{width:80px;height:80px;border-radius:10px;background:var(--sf2);object-fit:cover;flex-shrink:0}
+    .candidate-card .info{flex:1;min-width:0}
+    .candidate-card .rank{font-size:11px;color:var(--gd);font-weight:800;letter-spacing:.5px;margin-bottom:4px}
+    .candidate-card .title{font-size:14px;font-weight:700;line-height:1.3;margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    .candidate-card .price{font-size:13px;color:var(--gd);font-weight:700;margin-bottom:10px}
+    .candidate-card .btn{margin-bottom:0;font-size:13px;padding:10px}
+
+    /* SCANNER */
+    #reader{width:100%;border-radius:12px;overflow:hidden;margin-bottom:16px}
+    .upc-manual{display:flex;gap:8px;margin-bottom:16px}
+    .upc-manual input{flex:1;background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:12px;color:var(--tx);font-size:16px}
+    .upc-manual input::placeholder{color:var(--mu)}
+    .btn{background:var(--ac);border:none;border-radius:10px;padding:12px 20px;color:#fff;font-weight:800;font-size:15px;cursor:pointer;width:100%;margin-bottom:10px}
+    .btn.sec{background:var(--sf);border:1px solid var(--bd);color:var(--mu)}
+    .btn.grn{background:var(--sv);color:#000}
+    .btn.red{background:var(--dw)}
+
+    /* PRODUCT CARD */
+    .prod-card{background:var(--sf);border-radius:16px;padding:16px;margin-bottom:12px}
+    .prod-card .sku{font-size:11px;color:var(--ac);font-weight:700;letter-spacing:.5px;margin-bottom:4px}
+    .prod-card .name{font-size:16px;font-weight:800;margin-bottom:12px;line-height:1.3}
+    .prod-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+    .stat-box{background:var(--sf2);border-radius:10px;padding:10px;text-align:center}
+    .stat-box .val{font-size:22px;font-weight:800}
+    .stat-box .lbl{font-size:10px;color:var(--mu);margin-top:2px;text-transform:uppercase;letter-spacing:.5px}
+    .stat-box.green .val{color:var(--sv)}
+    .stat-box.orange .val{color:var(--ac)}
+    .stat-box.red .val{color:var(--dw)}
+    .stat-box.gold .val{color:var(--gd)}
+
+    /* QTY EDITOR */
+    .qty-editor{background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:12px}
+    .qty-editor label{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px}
+    .qty-row{display:flex;align-items:center;gap:12px;width:100%}
+    .qty-btn{background:var(--sf);border:1px solid var(--bd);border-radius:8px;width:44px;height:44px;font-size:22px;color:var(--tx);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .qty-input{flex:1 1 0;min-width:0;box-sizing:border-box;background:var(--sf);border:1px solid var(--ac);border-radius:8px;padding:10px;color:var(--tx);font-size:24px;font-weight:800;text-align:center;-webkit-appearance:none;margin:0}
+
+    /* SALES HISTORY */
+    .section-title{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;font-weight:700}
+    .sale-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}
+    .sale-row:last-child{border-bottom:none}
+    .sale-date{font-size:12px;color:var(--mu)}
+    .sale-qty{font-size:14px;font-weight:700;color:var(--sv)}
+    .sale-price{font-size:14px;font-weight:700;color:var(--gd)}
+
+    /* LISTING INFO */
+    .listing-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd);font-size:13px}
+    .listing-row:last-child{border-bottom:none}
+    .listing-row .key{color:var(--mu)}
+    .listing-row .val{font-weight:700;text-align:right}
+
+    /* TOAST */
+    #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
+    #toast.on{opacity:1}
+
+    /* LOADING */
+    .loader{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;gap:12px}
+    .sp{width:36px;height:36px;border:3px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .loader p{color:var(--mu);font-size:14px}
+
+    /* EMPTY STATE */
+    .empty{text-align:center;padding:40px 20px}
+    .empty .icon{font-size:48px;margin-bottom:12px}
+    .empty p{color:var(--mu);font-size:14px}
+
+    /* CHANNEL BADGE */
+    .channel-badge{display:inline-block;background:var(--sf2);border-radius:6px;padding:3px 8px;font-size:11px;color:var(--mu);margin-right:4px;margin-bottom:4px}
+    .channel-badge.ebay{color:#86b817}
+    .channel-badge.shopify{color:#96bf48}
+
+    .tag{display:inline-block;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;margin-right:4px}
+    .tag.active{background:rgba(0,230,118,.15);color:var(--sv)}
+    .tag.inactive{background:rgba(255,23,68,.15);color:var(--dw)}
+
+    /* MULTI-LOCATION MODULE */
+    .ssloc-section{margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
+    .ssloc-header{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;font-weight:700}
+    .ssloc-list-container{background:var(--sf2);border-radius:10px;padding:12px;margin-bottom:12px;min-height:40px}
+    .ssloc-list-container div{margin-bottom:8px}
+    .ssloc-list-container div:last-child{margin-bottom:0}
+
+    .loc-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+                       background:rgba(0,0,0,.9);z-index:9000;flex-direction:column;align-items:center;justify-content:center;padding:20px}
+    .loc-modal-overlay.on{display:flex}
+
+    .loc-modal-content{background:var(--sf);border-radius:16px;width:100%;max-width:90vw;
+                       padding:20px;display:flex;flex-direction:column;gap:16px;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+
+    .loc-modal-section{display:flex;flex-direction:column;gap:10px}
+    .loc-modal-section-title{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+
+    #loc-modal-qr-reader{width:100%;height:250px;border-radius:8px;overflow:hidden;background:#000}
+
+    .loc-modal-manual-input{width:100%;padding:12px;background:var(--sf2);border:1px solid var(--bd);
+                            border-radius:8px;color:var(--tx);font-size:16px;box-sizing:border-box;text-transform:uppercase}
+
+    .loc-modal-btn{background:var(--ac);border:none;border-radius:8px;padding:12px;color:#fff;
+                   font-weight:800;font-size:14px;cursor:pointer;width:100%}
+    .loc-modal-btn.sec{background:var(--sf2);color:var(--mu);border:1px solid var(--bd)}
+
+    .loc-modal-msg{font-size:12px;color:var(--mu);text-align:center}
+
+
+    /* EXIT INVENTORY MODALS */
+    .exit-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+                        background:rgba(0,0,0,.9);z-index:9000;align-items:center;justify-content:center;padding:20px;overflow-y:auto}
+    .exit-modal-overlay.on{display:flex}
+    .exit-modal-content{background:var(--sf);border-radius:16px;width:100%;max-width:90vw;
+                        padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:0 4px 20px rgba(0,0,0,.3);margin:auto}
+    .exit-field-group{display:flex;flex-direction:column;gap:8px}
+    .exit-field-label{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+    .exit-input{width:100%;padding:12px;background:var(--sf2);border:1px solid var(--bd);
+                border-radius:8px;color:var(--tx);font-size:16px;box-sizing:border-box}
+    .exit-input:focus{outline:none;border-color:var(--ac)}
+    .exit-select{width:100%;padding:12px;background:var(--sf2);border:1px solid var(--bd);
+                 border-radius:8px;color:var(--tx);font-size:16px;box-sizing:border-box}
+    .exit-textarea{width:100%;padding:12px;background:var(--sf2);border:1px solid var(--bd);
+                   border-radius:8px;color:var(--tx);font-size:16px;box-sizing:border-box;min-height:60px;font-family:inherit}
+    .exit-btn{background:var(--ac);border:none;border-radius:8px;padding:12px;color:#fff;
+              font-weight:800;font-size:14px;cursor:pointer}
+    .exit-btn.cancel{background:var(--sf2);color:var(--mu);border:1px solid var(--bd)}
+    .exit-msg{font-size:12px;color:var(--mu);text-align:center;min-height:16px}
+
+  </style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-logo" onclick="goHome()" ontouchend="event.preventDefault();goHome()" style="cursor:pointer">
+    <img src="https://octavio-cmd.github.io/savvy-home/icon.png" onerror="this.style.display='none'">
+    <div>
+      <div class="hdr-title"><span>Savvy</span> Inventory</div>
+      <div style="font-size:10px;color:var(--dw);font-weight:800;letter-spacing:2px;margin-top:2px">🔧 STAGING</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <button class="hdr-back" id="headerLogout" onclick="savvyLogout()" ontouchend="event.preventDefault();savvyLogout()" style="display:none;background:var(--dw);color:white;padding:6px 12px;border-radius:6px;font-size:12px">🚪 Salir</button>
+    <button class="hdr-back" onclick="goHome()" ontouchend="event.preventDefault();goHome()">🏠 Home</button>
+  </div>
+</div>
+
+<!-- LOGIN SCREEN -->
+<div class="scr" id="scr-login">
+  <div style="padding:40px 20px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 57px)">
+    <div style="text-align:center;margin-bottom:40px">
+      <div style="font-size:48px;margin-bottom:16px">🔐</div>
+      <div style="font-size:22px;font-weight:800">Savvy Inventory</div>
+      <div style="font-size:13px;color:var(--mu);margin-top:8px">Inicia sesión para continuar</div>
+    </div>
+
+    <div style="width:100%;max-width:320px;display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="display:block;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;font-weight:700">Usuario</label>
+        <input type="text" id="loginUsuario" placeholder="Tu usuario" style="width:100%;padding:12px;background:var(--sf);border:1px solid var(--bd);border-radius:10px;color:var(--tx);font-size:16px;box-sizing:border-box">
+      </div>
+
+      <div>
+        <label style="display:block;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;font-weight:700">Contraseña</label>
+        <input type="password" id="loginPassword" placeholder="Tu contraseña" style="width:100%;padding:12px;background:var(--sf);border:1px solid var(--bd);border-radius:10px;color:var(--tx);font-size:16px;box-sizing:border-box">
+      </div>
+
+      <div id="login-msg" style="font-size:13px;color:var(--dw);text-align:center;min-height:16px;margin-top:4px"></div>
+
+      <button class="btn" onclick="savvyLogin()" ontouchend="event.preventDefault();savvyLogin()" style="margin-top:8px">🔓 Ingresar</button>
+    </div>
+
+    <div style="font-size:12px;color:var(--mu);text-align:center;margin-top:20px;padding:16px">
+      <p>Usa tus credenciales de Savvy</p>
+    </div>
+  </div>
+</div>
+
+<!-- HOME SCREEN -->
+<div class="scr on" id="scr-home">
+  <div style="padding:8px 0 16px">
+    <div style="font-size:22px;font-weight:800">Inventory Manager</div>
+    <div style="font-size:13px;color:var(--mu);margin-top:4px">Search by UPC or SKU in Sellbrite</div>
+  </div>
+
+  <div class="scan-card" onclick="openScanner()" ontouchend="event.preventDefault();openScanner()">
+    <div class="icon">📷</div>
+    <h2>Scan Barcode</h2>
+    <p>Point camera at UPC barcode</p>
+  </div>
+
+  <div class="photo-card" onclick="openPhotoIdentify()" ontouchend="event.preventDefault();openPhotoIdentify()">
+    <div class="icon">🖼️</div>
+    <h2>Identify by Photo<span class="beta-tag">BETA</span></h2>
+    <p>Take or upload a photo to find a possible match</p>
+  </div>
+
+  <div style="font-size:12px;color:var(--mu);text-align:center;margin:12px 0">— or type manually —</div>
+
+  <div class="upc-manual">
+    <input type="number" id="manualUpc" placeholder="Enter UPC or SKU..." inputmode="numeric">
+    <button class="btn" style="width:auto;padding:12px 16px" onclick="searchManual()" ontouchend="event.preventDefault();searchManual()">🔍</button>
+  </div>
+
+  <div id="recent-searches" style="margin-top:8px"></div>
+</div>
+
+<!-- SCANNER SCREEN -->
+<div class="scr" id="scr-scan">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div id="reader"></div>
+  <div class="upc-manual">
+    <input type="number" id="scanUpc" placeholder="Or type UPC here..." inputmode="numeric">
+    <button class="btn" style="width:auto;padding:12px 16px" onclick="searchFromScan()" ontouchend="event.preventDefault();searchFromScan()">🔍</button>
+  </div>
+</div>
+
+<!-- LOADING SCREEN -->
+<div class="scr" id="scr-load">
+  <div class="loader">
+    <div class="sp"></div>
+    <p id="load-msg">Searching Sellbrite...</p>
+  </div>
+</div>
+
+<!-- RESULTS SCREEN -->
+<div class="scr" id="scr-result">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← New Search</button>
+  <div id="result-content"></div>
+</div>
+
+<!-- NOT FOUND SCREEN -->
+<div class="scr" id="scr-notfound">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div class="empty">
+    <div class="icon">🔍</div>
+    <h2 style="margin-bottom:8px">Not Found</h2>
+    <p id="notfound-msg">No product found with that UPC in Sellbrite</p>
+  </div>
+  <div style="margin-top:20px;padding:16px;background:var(--sf);border-radius:12px;border:1px solid var(--bd)">
+    <p style="font-size:13px;color:var(--mu);text-align:center;margin-bottom:14px">This product is not in Sellbrite or ShipStation.<br>Do you want to remove it from inventory anyway?</p>
+    <button class="btn" style="background:var(--dw);width:100%" onclick="manualExitOpen()" ontouchend="event.preventDefault();manualExitOpen()">🚪 Remove from Inventory (Manual)</button>
+  </div>
+</div>
+
+<!-- PHOTO IDENTIFY: CAPTURE SCREEN (BETA) -->
+<div class="scr" id="scr-photo-capture">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div style="text-align:center;margin-bottom:16px">
+    <h2 style="font-size:18px;font-weight:800">Identify by Photo<span class="beta-tag">BETA</span></h2>
+    <p style="font-size:13px;color:var(--mu);margin-top:6px">Take a clear photo of the product. This finds possible matches — it does not confirm inventory.</p>
+  </div>
+  <img id="photo-preview-img" class="photo-preview" style="display:none">
+  <div class="photo-capture-row">
+    <input type="file" id="photo-input-camera" accept="image/*" capture="environment" style="display:none">
+    <input type="file" id="photo-input-library" accept="image/*" style="display:none">
+    <button class="btn" onclick="document.getElementById('photo-input-camera').click()" ontouchend="event.preventDefault();document.getElementById('photo-input-camera').click()">📷 Take Photo</button>
+    <button class="btn sec" onclick="document.getElementById('photo-input-library').click()" ontouchend="event.preventDefault();document.getElementById('photo-input-library').click()">🖼️ Choose from Library</button>
+  </div>
+</div>
+
+<!-- PHOTO IDENTIFY: CANDIDATES SCREEN (BETA) -->
+<div class="scr" id="scr-photo-candidates">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Cancel</button>
+  <div style="margin-bottom:12px">
+    <div style="font-size:16px;font-weight:800">Possible Matches</div>
+    <div style="font-size:12px;color:var(--mu);margin-top:4px">Tap a result to verify it against inventory. None of these are confirmed yet.</div>
+  </div>
+  <div id="photo-candidates-content"></div>
+  <button class="btn sec" style="margin-top:8px" onclick="tryAnotherPhoto()" ontouchend="event.preventDefault();tryAnotherPhoto()">🔁 Try Another Photo</button>
+</div>
+
+<!-- PHOTO IDENTIFY: VERIFICATION FAILED SCREEN (BETA) -->
+<div class="scr" id="scr-photo-verify-fail">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div class="empty">
+    <div class="icon">⚠️</div>
+    <h2 style="margin-bottom:8px">Cannot verify this product in Inventory.</h2>
+    <p id="photo-verify-fail-msg">This match could not be confirmed against Sellbrite.</p>
+  </div>
+  <div style="margin-top:20px;display:flex;flex-direction:column;gap:10px">
+    <button class="btn" onclick="enterUpcManually()" ontouchend="event.preventDefault();enterUpcManually()">⌨️ Enter UPC Manually</button>
+    <button class="btn sec" onclick="tryAnotherPhoto()" ontouchend="event.preventDefault();tryAnotherPhoto()">🔁 Try Another Photo</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── CONFIG ──────────────────────────────────────────────────
+// ⚠️ STAGING BUILD - Uses staging backend URL
+const SB_PROXY = 'https://ample-imagination-clothing-staging.up.railway.app';
+let scanner = null;
+let currentProduct = null;
+let _tt = null;
+
+// ── SESSION STATE (AUTHENTICATION) ──────────────────────────
+let savvy_session_token = null;
+let savvy_session_user = null;
+
+function getToken(){
+  return sessionStorage.getItem('savvy_session_token');
+}
+
+function getSessionUser(){
+  return sessionStorage.getItem('savvy_session_user');
+}
+
+function isAuthenticated(){
+  return getToken() !== null && getSessionUser() !== null;
+}
+
+// ── SAVVY AUTH FETCH HELPER ─────────────────────────────────
+async function savvyAuthFetch(path, options={}){
+  const token = getToken();
+  if(!token){
+    showLoginScreen();
+    throw new Error('No authentication token');
+  }
+
+  // Validate origin exactly using URL API
+  const backendUrl = new URL(SB_PROXY);
+  let requestUrl;
+  try {
+    // Resolve path safely: absolute URLs must match origin, relative must be resolved
+    if(path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')){
+      requestUrl = new URL(path);
+    } else {
+      requestUrl = new URL(path, SB_PROXY);
+    }
+  } catch(e){
+    throw new Error('Invalid URL construction');
+  }
+
+  // Verify origin matches exactly - REJECT if different origin
+  if(requestUrl.origin !== backendUrl.origin){
+    throw new Error('Origin mismatch: ' + requestUrl.origin + ' !== ' + backendUrl.origin);
+  }
+
+  const url = requestUrl.href;
+  const headers = new Headers(options.headers || {});
+  headers.set('Authorization', 'Bearer ' + token);
+
+  const fetchOptions = {
+    ...options,
+    headers: headers
+  };
+
+  const res = await fetch(url, fetchOptions);
+
+  // Handle 401/403: clear session, show login, don't reload
+  if(res.status === 401 || res.status === 403){
+    sessionStorage.removeItem('savvy_session_token');
+    sessionStorage.removeItem('savvy_session_user');
+    showLoginScreen();
+    throw new Error('Session expired or unauthorized');
+  }
+
+  return res;
+}
+
+// ── LOGIN FUNCTIONS ────────────────────────────────────────
+function showLoginScreen(){
+  document.querySelectorAll('.scr').forEach(s=>s.classList.remove('on'));
+  $('scr-login').classList.add('on');
+}
+
+async function savvyLogin(){
+  const usuario = $('loginUsuario').value.trim();
+  let password = '';
+  const msgEl = $('login-msg');
+
+  try {
+    password = $('loginPassword').value;
+
+    if(!usuario){
+      msgEl.textContent = '⚠️ Ingresa tu usuario';
+      msgEl.style.color = 'var(--dw)';
+      return;
+    }
+
+    if(!password){
+      msgEl.textContent = '⚠️ Ingresa tu contraseña';
+      msgEl.style.color = 'var(--dw)';
+      return;
+    }
+
+    msgEl.textContent = '⏳ Autenticando...';
+    msgEl.style.color = 'var(--mu)';
+
+    const res = await fetch(SB_PROXY + '/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({usuario: usuario, password: password})
+    });
+
+    const data = await res.json();
+
+    if(!res.ok || !data.token){
+      msgEl.textContent = '❌ Credenciales inválidas';
+      msgEl.style.color = 'var(--dw)';
+      return;
+    }
+
+    // Success: save token and user to sessionStorage only
+    sessionStorage.setItem('savvy_session_token', data.token);
+    sessionStorage.setItem('savvy_session_user', data.usuario);
+
+    msgEl.textContent = '';
+
+    // Hide login and show home
+    showScreen('scr-home');
+    toast('✅ Sesión iniciada como ' + data.usuario);
+
+  } catch(err){
+    msgEl.textContent = '❌ Error de conexión';
+    msgEl.style.color = 'var(--dw)';
+  } finally {
+    // GUARANTEED cleanup: password variable and field cleared regardless of path taken
+    password = '';
+    $('loginPassword').value = '';
+  }
+}
+
+function savvyLogout(){
+  sessionStorage.removeItem('savvy_session_token');
+  sessionStorage.removeItem('savvy_session_user');
+  $('loginUsuario').value = '';
+  $('loginPassword').value = '';
+  $('login-msg').textContent = '';
+  showLoginScreen();
+  toast('✅ Sesión cerrada');
+}
+
+// ── UTILS ───────────────────────────────────────────────────
+function $(id){ return document.getElementById(id); }
+
+function toast(msg, ms=2600){
+  const t=$('toast');
+  t.textContent=msg;
+  t.classList.add('on');
+  clearTimeout(_tt);
+  _tt=setTimeout(()=>t.classList.remove('on'),ms);
+}
+
+function showScreen(id){
+  document.querySelectorAll('.scr').forEach(s=>s.classList.remove('on'));
+  $(id).classList.add('on');
+}
+
+function goHome(){
+  window.location.href='https://octavio-cmd.github.io/savvy-home/';
+}
+
+// ── RAILWAY CONFIG (no credentials needed in browser) ───────
+
+// ── SCANNER ──────────────────────────────────────────────────
+function openScanner(){
+  showScreen('scr-scan');
+  if(scanner) return;
+  scanner = new Html5Qrcode('reader');
+  scanner.start(
+    {facingMode:'environment'},
+    {fps:15, qrbox:{width:280,height:100}},
+    (decodedText) => {
+      stopScanner();
+      searchUPC(decodedText.trim());
+    },
+    () => {}
+  ).catch(err=>{
+    toast('Camera error: ' + err);
+  });
+}
+
+function stopScanner(){
+  if(scanner){
+    scanner.stop().catch(()=>{});
+    scanner = null;
+  }
+}
+
+function searchFromScan(){
+  const v = $('scanUpc').value.trim();
+  if(!v){ toast('⚠️ Enter a UPC'); return; }
+  stopScanner();
+  searchUPC(v);
+}
+
+function searchManual(){
+  const v = $('manualUpc').value.trim();
+  if(!v){ toast('⚠️ Enter a UPC or SKU'); return; }
+  searchUPC(v);
+}
+
+// ── SEARCH SELLBRITE via Railway Proxy ───────────────────────
+async function searchUPC(upc){
+  if(!isAuthenticated()){ showLoginScreen(); return; }
+  showScreen('scr-load');
+  const upcClean = upc.replace(/\D/g,'');
+  $('load-msg').textContent = 'Searching Sellbrite for UPC: ' + upcClean + '...';
+
+  try {
+    const res = await savvyAuthFetch('/sb/search?upc=' + encodeURIComponent(upcClean));
+    const data = await res.json();
+
+    if(res.status === 404 || data.status === 'not_found'){
+      showNotFound('No product found with UPC: ' + upcClean + '\n\nMake sure the UPC is part of your SKU in Sellbrite (e.g. NIK-' + upcClean + '-1PK)', upcClean);
+      return;
+    }
+
+    if(!res.ok || data.status === 'error'){
+      throw new Error(data.error || 'Search failed');
+    }
+
+    await showProductFromProxy(data, upcClean);
+
+  } catch(err){
+    console.error('Search error:', err);
+    toast('❌ Error: ' + (err.message || err));
+    showScreen('scr-home');
+  }
+}
+
+// ── PROXY FETCH (Railway handles Sellbrite auth) ─────────────
+async function sbFetch(path, options={}){
+  // Convert Sellbrite API path to Railway proxy path
+  const url = SB_PROXY + path;
+  const res = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers||{}) }
+  });
+  if(res.status === 404) return null;
+  if(!res.ok) throw new Error('Proxy error: ' + res.status);
+  return res.json();
+}
+
+// ── SHOW PRODUCT FROM PROXY ─────────────────────────────────
+async function showProductFromProxy(data, searchedUpc){
+  // El backend ahora devuelve una LISTA de paquetes (data.products).
+  // Soportamos también el formato antiguo (data.product) por si acaso.
+  let products = data.products;
+  if(!products && data.product){ products = [ {...data.product, inventory: data.inventory} ]; }
+  products = products || [];
+
+  // Guardar todos los productos en memoria para el update por SKU
+  window.loadedProducts = {};
+
+  const upcShown = data.upc || searchedUpc || '';
+  const count = products.length;
+
+  let cards = products.map((p, idx) => {
+    const inv = p.inventory || {};
+    const totalQty = inv.total_quantity || 0;
+    const totalOnHand = inv.total_on_hand || 0;
+    const wh = (inv.channels||[])[0]?.warehouse_uuid || '';
+    const inputId = 'qty-' + idx;
+
+    // Guardar en memoria para updateInventory
+    window.loadedProducts[idx] = { sku: p.sku, warehouse_uuid: wh, inputId };
+
+    return `
+    <div class="prod-card">
+      <div class="sku">${p.sku||'—'}</div>
+      <div class="name">${p.name||'Unnamed Product'}</div>
+      ${p.brand ? `<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Brand: <b>${p.brand}</b></div>` : ''}
+      <div style="margin-bottom:8px">
+        ${p.active ? '<span class="tag active">● Active</span>' : '<span class="tag inactive">● Inactive</span>'}
+        ${p.price ? `<span class="tag" style="background:var(--sf2);color:var(--gd);margin-left:6px">$${parseFloat(p.price).toFixed(2)}</span>` : ''}
+      </div>
+
+      <div style="margin-bottom:12px;padding:12px;background:var(--sf);border-radius:8px;border:2px solid var(--sv)">
+        <div style="font-size:14px;color:var(--sv);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;font-weight:bold">📊 eBay SALES (Last 30 Days)</div>
+        <div id="ebay-sales-${idx}" style="font-size:16px;color:var(--sv);font-weight:bold;line-height:1.8;min-height:40px">Consultando ventas...</div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bd)">
+          <div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">📅 eBay Listing Info</div>
+          <div id="ebay-dates-${idx}" style="font-size:13px;color:var(--mu)">Consultando eBay...</div>
+        </div>
+      </div>
+
+      <div class="prod-stats">
+        <div class="stat-box ${totalQty>5?'green':totalQty>0?'orange':'red'}">
+          <div class="val">${totalQty}</div>
+          <div class="lbl">Available</div>
+        </div>
+        <div class="stat-box">
+          <div class="val">${totalOnHand}</div>
+          <div class="lbl">On Hand</div>
+        </div>
+      </div>
+
+      <div class="qty-editor">
+        <label>Nueva cantidad (On Hand)</label>
+        <div class="qty-row">
+          <button class="qty-btn" ontouchend="event.preventDefault();changeQty('${inputId}',-1)" onclick="changeQty('${inputId}',-1)">−</button>
+          <input type="number" class="qty-input" id="${inputId}" value="${totalOnHand}" inputmode="numeric">
+          <button class="qty-btn" ontouchend="event.preventDefault();changeQty('${inputId}',1)" onclick="changeQty('${inputId}',1)">+</button>
+        </div>
+      </div>
+      <button class="btn grn" onclick="updateInventory(${idx})" ontouchend="event.preventDefault();updateInventory(${idx})">✅ Actualizar este paquete</button>
+      <button class="btn" style="background:var(--dw);margin-top:8px" onclick="exitModalOpen(${idx})" ontouchend="event.preventDefault();exitModalOpen(${idx})">🚪 Remove from Inventory</button>
+
+      <div class="ssloc-section">
+        <div class="ssloc-header">📍 Localizaciones (ShipStation)</div>
+        <div id="ssloc-status-${idx}" style="font-size:13px;color:var(--mu);margin-bottom:12px">Consultando ShipStation...</div>
+        
+        <div id="ssloc-list-${idx}" class="ssloc-list-container">
+          <div style="font-size:12px;color:var(--mu);text-align:center;padding:12px">Sin localizaciones</div>
+        </div>
+        
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="locModalOpen(${idx})" ontouchend="event.preventDefault();locModalOpen(${idx})" style="flex:1">📍 Agregar</button>
+          <button class="btn grn" onclick="saveLocations(${idx})" ontouchend="event.preventDefault();saveLocations(${idx})" style="flex:1">✅ Guardar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const header = count > 1
+    ? `<div class="prod-card" style="text-align:center;padding:14px">
+         <div style="font-size:14px;color:var(--mu)">UPC ${upcShown}</div>
+         <div style="font-size:18px;font-weight:800;color:var(--ac)">${count} paquetes encontrados</div>
+         <div style="font-size:12px;color:var(--mu)">Elige a cuál agregar inventario</div>
+       </div>`
+    : '';
+
+  $('result-content').innerHTML = header + cards;
+  showScreen('scr-result');
+  if(products[0]){ saveRecentSearch(products[0].sku, products[0].name, upcShown); }
+
+  // Consultar la ubicación en ShipStation para cada paquete (en segundo plano)
+  products.forEach((p, idx) => { 
+    loadLocationsList(idx, p.sku, p.name, upcShown);
+    loadEbayDates(idx, p.sku, upcShown);
+  });
+}
+
+// ── SHIPSTATION: cargar ubicación ────────────────────────────
+async function loadLocation(idx, sku, name, upc){
+  const statusEl = document.getElementById('ssloc-status-' + idx);
+  const inputEl  = document.getElementById('ssloc-input-' + idx);
+  const btnEl    = document.getElementById('ssloc-btn-' + idx);
+  if(!statusEl) return;
+
+  // Guardar datos para saveLocation
+  window.loadedProducts[idx] = Object.assign(window.loadedProducts[idx]||{}, {sku, name, upc});
+
+  try {
+    const token = getToken();
+    if(!token){
+      statusEl.innerHTML = '<span style="color:var(--mu)">⚠️ No hay sesión activa</span>';
+      return;
+    }
+    const res = await savvyAuthFetch('/ss/location?sku=' + encodeURIComponent(sku));
+    const data = await res.json();
+
+    if(data.exists){
+      const loc = data.warehouse_location || '';
+      if(loc){
+        statusEl.innerHTML = '<span style="color:var(--sv)">✅ Ubicación: <b>' + loc + '</b></span>';
+      } else {
+        statusEl.innerHTML = '<span style="color:var(--gd)">⚠️ Está en ShipStation pero sin ubicación</span>';
+      }
+      if(inputEl) inputEl.value = loc;
+      if(btnEl) btnEl.textContent = '📍 Actualizar ubicación';
+    } else {
+      statusEl.innerHTML = '<span style="color:#ff9800">🆕 No está en ShipStation. Escribe la ubicación para crearlo.</span>';
+      if(btnEl) btnEl.textContent = '🆕 Crear en ShipStation';
+    }
+  } catch(err){
+    statusEl.innerHTML = '<span style="color:var(--mu)">No se pudo consultar ShipStation</span>';
+  }
+}
+
+// ── eBay: cargar fechas de listado ────────────────────────────
+async function loadEbayDates(idx, sku, upc){
+  const datesEl = document.getElementById('ebay-dates-' + idx);
+  if(!datesEl) return;
+
+  try {
+    const token = getToken();
+    if(!token){
+      datesEl.innerHTML = '<span style="color:var(--mu)">Sin sesión</span>';
+      return;
+    }
+    // Buscar por UPC (gtin) + SKU en el backend Railway
+    const qs = 'sku=' + encodeURIComponent(sku) + (upc ? '&upc=' + encodeURIComponent(upc) : '');
+    const res = await savvyAuthFetch('/ebay-item-dates?' + qs);
+    const data = await res.json();
+
+    if(data.status === 'error' || !data.listingDate){
+      datesEl.innerHTML = '<span style="color:var(--mu)">No encontrado en eBay</span>';
+      return;
+    }
+
+    let html = '';
+    html += '<div class="listing-row"><span class="key">Listed on:</span> <span class="val">' + data.listingDate + '</span></div>';
+    if(data.daysListed !== undefined && data.daysListed !== null){
+      html += '<div class="listing-row"><span class="key">Days listed:</span> <span class="val" style="color:var(--ac)">' + data.daysListed + ' días</span></div>';
+    }
+    if(data.title){
+      html += '<div style="font-size:11px;color:var(--mu);margin-top:6px;line-height:1.3">🛒 ' + data.title + '</div>';
+    }
+    datesEl.innerHTML = html;
+    
+    // Cargar ventas usando el legacy itemId (número real del listing)
+    var salesId = data.legacyItemId || data.itemId;
+    if(salesId){
+      loadEbaySales(idx, salesId);
+    }
+  } catch(err){
+    console.error('loadEbayDates error:', err);
+    datesEl.innerHTML = '<span style="color:var(--mu)">Error fetching eBay info</span>';
+  }
+}
+
+// ── eBay: cargar ventas por itemId ────────────────────────────
+async function loadEbaySales(idx, itemId){
+  const salesEl = document.getElementById('ebay-sales-' + idx);
+  if(!salesEl) return;
+
+  try {
+    const token = getToken();
+    if(!token){
+      salesEl.innerHTML = '<span style="color:var(--mu)">Sin sesión</span>';
+      return;
+    }
+    const res = await savvyAuthFetch('/ebay-sales?item_id=' + encodeURIComponent(itemId) + '&days=90');
+    const data = await res.json();
+
+    if(data.status === 'error' || !data.total_sold || data.total_sold === 0){
+      salesEl.innerHTML = '<span style="color:var(--mu);font-weight:normal">No sales in last 90 days</span>';
+      return;
+    }
+
+    let html = '';
+    // Grande y prominente: número de órdenes
+    html += '<div style="font-size:28px;color:var(--sv);font-weight:bold;margin-bottom:6px">' + data.total_sold + ' órdenes</div>';
+    // Subtítulo: unidades totales
+    html += '<div style="font-size:18px;color:var(--ac);font-weight:bold;margin-bottom:10px">' + data.total_quantity + ' unidades vendidas</div>';
+    
+    if(data.transactions && data.transactions.length > 0){
+      const recent = data.transactions.slice(0, 5);
+      html += '<div style="font-size:12px;color:var(--mu);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">';
+      html += '<strong>Recent transactions:</strong><br>';
+      recent.forEach(function(t, i){
+        html += '  ' + t.date + ': ' + t.qty + 'x<br>';
+      });
+      html += '</div>';
+    }
+    salesEl.innerHTML = html;
+  } catch(err){
+    console.error('loadEbaySales error:', err);
+    salesEl.innerHTML = '<span style="color:var(--mu);font-weight:normal">Error fetching sales</span>';
+  }
+}
+
+// ── SHIPSTATION: guardar/crear ubicación ─────────────────────
+async function saveLocation(idx){
+  const p = (window.loadedProducts||{})[idx];
+  if(!p){ toast('⚠️ No se cargó el producto'); return; }
+  const inputEl = document.getElementById('ssloc-input-' + idx);
+  const location = (inputEl && inputEl.value || '').trim();
+  if(!location){ toast('⚠️ Escribe una ubicación primero'); return; }
+
+  toast('📤 Guardando en ShipStation...');
+  try {
+    const token = getToken();
+    if(!token){
+      toast('❌ No hay sesión activa');
+      return;
+    }
+    const res = await savvyAuthFetch('/ss/create-product', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sku: p.sku,
+        name: p.name || p.sku,
+        warehouse_location: location,
+        upc: p.upc || ''
+      })
+    });
+    const result = await res.json();
+    if(!res.ok || result.status === 'error'){ throw new Error(result.error || 'Error'); }
+
+    const statusEl = document.getElementById('ssloc-status-' + idx);
+    if(statusEl) statusEl.innerHTML = '<span style="color:var(--sv)">✅ Ubicación: <b>' + location + '</b></span>';
+    toast('✅ ' + (result.message || 'Guardado en ShipStation'), 3000);
+  } catch(err){
+    console.error('SS save error:', err);
+    toast('❌ Error: ' + (err.message||err));
+  }
+}
+
+// ── QTY CONTROLS ─────────────────────────────────────────────
+function changeQty(inputId, delta){
+  const input = document.getElementById(inputId);
+  if(!input) return;
+  const val = parseInt(input.value||'0') + delta;
+  input.value = Math.max(0, val);
+}
+
+// ── UPDATE INVENTORY ─────────────────────────────────────────
+async function updateInventory(idx){
+  const p = (window.loadedProducts||{})[idx];
+  if(!p){ toast('⚠️ No se cargó el producto'); return; }
+  const input = document.getElementById(p.inputId);
+  const newQty = parseInt((input && input.value) || '0');
+
+  toast('📤 Actualizando inventario...');
+
+  try {
+    const token = getToken();
+    if(!token){
+      toast('❌ No hay sesión activa');
+      return;
+    }
+    const res = await savvyAuthFetch('/sb/update-inventory', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sku: p.sku,
+        warehouse_uuid: p.warehouse_uuid || '',
+        quantity: newQty
+      })
+    });
+    const result = await res.json();
+    if(!res.ok || result.status === 'error'){
+      throw new Error(result.error || 'Update failed');
+    }
+    toast('✅ ' + p.sku + ' actualizado a ' + newQty + ' unidades', 3000);
+  } catch(err){
+    console.error('Update error:', err);
+    toast('❌ Error al actualizar: ' + (err.message||err));
+  }
+}
+
+// ── NOT FOUND ────────────────────────────────────────────────
+function showNotFound(msg, scannedUpc){
+  $('notfound-msg').textContent = msg || 'No product found';
+  window._lastScannedUpc = scannedUpc || '';
+  showScreen('scr-notfound');
+}
+
+// ── RECENT SEARCHES ──────────────────────────────────────────
+function saveRecentSearch(sku, name, upc){
+  let recent = JSON.parse(localStorage.getItem('inv_recent')||'[]');
+  recent = recent.filter(r => r.sku !== sku);
+  recent.unshift({sku, name, upc, ts: Date.now()});
+  recent = recent.slice(0,5);
+  localStorage.setItem('inv_recent', JSON.stringify(recent));
+  renderRecent();
+}
+
+function renderRecent(){
+  const recent = JSON.parse(localStorage.getItem('inv_recent')||'[]');
+  const el = $('recent-searches');
+  if(!recent.length){ el.innerHTML=''; return; }
+  el.innerHTML = `
+    <div class="section-title" style="margin-bottom:8px">Recent Searches</div>
+    ${recent.map(r=>`
+      <div class="prod-card" style="padding:12px;cursor:pointer" onclick="searchUPC('${r.upc||r.sku}')" ontouchend="event.preventDefault();searchUPC('${r.upc||r.sku}')">
+        <div style="font-size:11px;color:var(--ac);font-weight:700">${r.sku}</div>
+        <div style="font-size:14px;font-weight:600;margin-top:2px">${r.name||'—'}</div>
+      </div>
+    `).join('')}
+  `;
+}
+
+// ── INIT ─────────────────────────────────────────────────────
+function updateAuthUI(){
+  const isAuth = isAuthenticated();
+  $('headerLogout').style.display = isAuth ? 'block' : 'none';
+
+  if(isAuth){
+    renderRecent();
+    showScreen('scr-home');
+  } else {
+    showLoginScreen();
+  }
+}
+
+window.addEventListener('load', function(){
+  updateAuthUI();
+  $('manualUpc').addEventListener('keydown', e=>{ if(e.key==='Enter') searchManual(); });
+  $('scanUpc').addEventListener('keydown', e=>{ if(e.key==='Enter') searchFromScan(); });
+  $('loginUsuario').addEventListener('keydown', e=>{ if(e.key==='Enter') savvyLogin(); });
+  $('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') savvyLogin(); });
+  const photoCamInput = $('photo-input-camera');
+  if(photoCamInput) photoCamInput.addEventListener('change', e => handlePhotoFileSelected(e.target));
+  const photoLibInput = $('photo-input-library');
+  if(photoLibInput) photoLibInput.addEventListener('change', e => handlePhotoFileSelected(e.target));
+});
+// ═════════════════════════════════════════════════════════════════════════════
+// MULTI-LOCATION MODULE para Inventory Manager
+// Permite agregar N localizaciones por producto (array) en lugar de solo 1
+// Soporta: QR scan + entrada manual, lista visual, borrar individual, guardar a ShipStation
+// ═════════════════════════════════════════════════════════════════════════════
+
+let _locModalOpen = false;
+let _locModalTarget = null;  // idx del producto
+let _locModalQRScanner = null;
+
+// ──────────────────────────────────────────────────────────────────────────
+// ABRIR MODAL DE LOCALIZACIÓN (QR + manual)
+// ──────────────────────────────────────────────────────────────────────────
+async function locModalOpen(idx) {
+  _locModalTarget = idx;
+  _locModalOpen = true;
+  const overlay = document.getElementById('loc-modal-overlay');
+  if(!overlay) return;
+  
+  overlay.style.display = 'flex';
+  
+  // Iniciar QR scanner
+  if(!_locModalQRScanner){
+    try {
+      _locModalQRScanner = new Html5Qrcode('loc-modal-qr-reader');
+      _locModalQRScanner.start(
+        {facingMode: 'environment'},
+        {fps: 15, qrbox: {width: 250, height: 100}},
+        (decodedText) => {
+          locModalQRCapture(decodedText.trim());
+        },
+        () => {}
+      );
+    } catch(e){
+      console.warn('Could not start QR scanner:', e);
+      const msg = document.getElementById('loc-modal-qr-msg');
+      if(msg) msg.textContent = '⚠️ Camera error. Use manual input below.';
+    }
+  }
+}
+
+function locModalClose(){
+  _locModalOpen = false;
+  _locModalTarget = null;
+  const overlay = document.getElementById('loc-modal-overlay');
+  if(overlay) overlay.style.display = 'none';
+  if(_locModalQRScanner){
+    _locModalQRScanner.stop().catch(()=>{});
+    _locModalQRScanner = null;
+  }
+}
+
+// Capturar escaneo QR
+function locModalQRCapture(code){
+  locModalClose();
+  if(_locModalTarget !== null && _locModalTarget !== undefined){
+    locAddLocation(_locModalTarget, code);
+  }
+}
+
+// Agregar desde entrada manual
+function locModalManualAdd(){
+  const input = document.getElementById('loc-modal-manual-input');
+  if(!input) return;
+  const code = (input.value || '').trim().toUpperCase();
+  if(!code){
+    const msg = document.getElementById('loc-modal-manual-msg');
+    if(msg) msg.textContent = '⚠️ Escribe una localización';
+    return;
+  }
+  input.value = '';
+  locModalClose();
+  if(_locModalTarget !== null && _locModalTarget !== undefined){
+    locAddLocation(_locModalTarget, code);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// LÓGICA DE LOCALIZACIONES (array en window.loadedProducts[idx].locations)
+// ──────────────────────────────────────────────────────────────────────────
+
+function locAddLocation(idx, code){
+  if(!window.loadedProducts) window.loadedProducts = {};
+  if(!window.loadedProducts[idx]) window.loadedProducts[idx] = {};
+  
+  if(!Array.isArray(window.loadedProducts[idx].locations)){
+    window.loadedProducts[idx].locations = [];
+  }
+  
+  // No duplicados
+  if(window.loadedProducts[idx].locations.includes(code)){
+    toast('⚠️ Localización ' + code + ' ya existe');
+    return;
+  }
+  
+  window.loadedProducts[idx].locations.push(code);
+  locRenderList(idx);
+  toast('✅ Localización agregada: ' + code);
+}
+
+function locRemoveLocation(idx, locCode){
+  if(!window.loadedProducts || !window.loadedProducts[idx]) return;
+  if(!Array.isArray(window.loadedProducts[idx].locations)) return;
+  
+  window.loadedProducts[idx].locations = 
+    window.loadedProducts[idx].locations.filter(l => l !== locCode);
+  
+  locRenderList(idx);
+  toast('❌ Localización removida: ' + locCode);
+}
+
+function locClearAll(idx){
+  if(!window.loadedProducts || !window.loadedProducts[idx]) return;
+  window.loadedProducts[idx].locations = [];
+  locRenderList(idx);
+  toast('❌ Todas las localizaciones borradas');
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// RENDERIZAR LISTA DE LOCALIZACIONES
+// ──────────────────────────────────────────────────────────────────────────
+
+function locRenderList(idx){
+  const container = document.getElementById('ssloc-list-' + idx);
+  if(!container) return;
+  
+  const locs = (window.loadedProducts && window.loadedProducts[idx] && 
+                window.loadedProducts[idx].locations) || [];
+  
+  if(locs.length === 0){
+    container.innerHTML = '<div style="font-size:12px;color:var(--mu);text-align:center;padding:12px">Sin localizaciones</div>';
+    return;
+  }
+  
+  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+  locs.forEach((loc, i) => {
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;
+              background:var(--sf2);padding:10px;border-radius:8px;border-left:3px solid var(--sv)">
+      <span style="font-weight:700;color:var(--tx)">${loc}</span>
+      <button style="background:var(--dw);border:none;border-radius:4px;padding:4px 8px;
+                     color:#fff;font-size:12px;cursor:pointer;font-weight:700"
+              onclick="locRemoveLocation(${idx}, '${loc}')">✕ Borrar</button>
+    </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// GUARDAR LOCALIZACIONES A SHIPSTATION
+// ──────────────────────────────────────────────────────────────────────────
+
+async function saveLocations(idx){
+  const p = (window.loadedProducts || {})[idx];
+  if(!p){
+    toast('⚠️ Producto no cargado');
+    return;
+  }
+  
+  const locs = Array.isArray(p.locations) ? p.locations : [];
+  if(locs.length === 0){
+    toast('⚠️ Agregar al menos una localización');
+    return;
+  }
+  
+  toast('📤 Guardando ' + locs.length + ' localización(es) en ShipStation...');
+
+  try {
+    const token = getToken();
+    if(!token){
+      toast('❌ No hay sesión activa');
+      return;
+    }
+    // Enviar como array; ShipStation puede guardar comma-separated o JSON
+    // Formato: "A-1, A-2, A-3" o como JSON array
+    const locationString = locs.join(', ');
+
+    const res = await savvyAuthFetch('/ss/create-product', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sku: p.sku,
+        name: p.name || p.sku,
+        warehouse_location: locationString,  // "A-1, A-2, A-3"
+        upc: p.upc || '',
+        locations: locs  // array original también
+      })
+    });
+    
+    if(!res.ok){
+      const result = await res.json();
+      throw new Error(result.error || 'Save failed');
+    }
+    
+    const result = await res.json();
+    toast('✅ ' + locs.length + ' localización(es) guardada(s)', 3000);
+    
+  } catch(err){
+    console.error('Location save error:', err);
+    toast('❌ Error: ' + (err.message || err));
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// LOAD (cargar localizaciones existentes de ShipStation)
+// ──────────────────────────────────────────────────────────────────────────
+
+async function loadLocationsList(idx, sku, name, upc){
+  const statusEl = document.getElementById('ssloc-status-' + idx);
+  if(!statusEl) return;
+  
+  try {
+    const token = getToken();
+    if(!token){
+      statusEl.innerHTML = '<span style="color:var(--mu)">⚠️ No hay sesión activa</span>';
+      return;
+    }
+    const res = await savvyAuthFetch('/ss/location?sku=' + encodeURIComponent(sku));
+    const data = await res.json();
+
+    if(!window.loadedProducts) window.loadedProducts = {};
+    if(!window.loadedProducts[idx]) window.loadedProducts[idx] = {};
+    
+    if(data.exists){
+      const locStr = data.warehouse_location || '';
+      if(locStr){
+        // Parse: puede ser "A-1, A-2, A-3" o JSON
+        let locs = [];
+        try {
+          locs = JSON.parse(locStr);
+        } catch(e){
+          locs = locStr.split(',').map(s => s.trim()).filter(s => s);
+        }
+        window.loadedProducts[idx].locations = locs;
+        statusEl.innerHTML = '<span style="color:var(--sv)">✅ ' + locs.length + ' localización(es) en ShipStation</span>';
+      } else {
+        window.loadedProducts[idx].locations = [];
+        statusEl.innerHTML = '<span style="color:var(--gd)">⚠️ Está en ShipStation pero sin localización</span>';
+      }
+    } else {
+      window.loadedProducts[idx].locations = [];
+      statusEl.innerHTML = '<span style="color:#ff9800">🆕 No está en ShipStation. Agrega localizaciones.</span>';
+    }
+    
+    locRenderList(idx);
+  } catch(err){
+    window.loadedProducts[idx].locations = [];
+    statusEl.innerHTML = '<span style="color:var(--mu)">⚠️ No se pudo consultar ShipStation</span>';
+  }
+}
+
+
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// EXIT INVENTORY MODULE - Registro de salidas a Google Sheets
+// ═════════════════════════════════════════════════════════════════════════
+const EXIT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx-k1-Aef7IDNQfobl6GL-o2_PxcYuk2fxwLDjJV9PFMxn9Z-WlOUzLGEEKu1wD9w3uzg/exec';
+
+// ── EXIT NORMAL (producto encontrado) ──────────────────────────────────
+let _exitTarget = null;
+
+function exitModalOpen(idx){
+  _exitTarget = idx;
+  const p = (window.loadedProducts || {})[idx];
+  if(!p){ toast('⚠️ Producto no cargado'); return; }
+  $('exit-sku').value = p.sku || '';
+  $('exit-product').value = p.name || '';
+  $('exit-qty').value = '';
+  $('exit-reason').value = 'Not selling';
+  $('exit-destination').value = 'Whatnot';
+  $('exit-notes').value = '';
+  $('exit-msg').textContent = '';
+  $('exit-modal-overlay').classList.add('on');
+}
+
+function exitModalClose(){
+  _exitTarget = null;
+  $('exit-modal-overlay').classList.remove('on');
+}
+
+async function exitSubmit(){
+  const sku = $('exit-sku').value.trim();
+  const product = $('exit-product').value.trim();
+  const qty = parseInt($('exit-qty').value) || 0;
+  const reason = $('exit-reason').value.trim();
+  const destination = $('exit-destination').value.trim();
+  const notes = $('exit-notes').value.trim();
+  const msg = $('exit-msg');
+
+  if(!qty || qty <= 0){ msg.textContent = '⚠️ Enter a valid quantity'; msg.style.color = 'var(--dw)'; return; }
+  if(!reason){ msg.textContent = '⚠️ Select a reason'; msg.style.color = 'var(--dw)'; return; }
+  if(!destination){ msg.textContent = '⚠️ Select a destination'; msg.style.color = 'var(--dw)'; return; }
+
+  msg.textContent = '📤 Registering exit...'; msg.style.color = 'var(--mu)';
+
+  try {
+    const payload = { sku, product, quantity: qty, reason, destination, user: 'demo', notes, timestamp: new Date().toISOString() };
+    await fetch(EXIT_WEBHOOK_URL, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(payload) });
+    // With mode:no-cors we can't read the response, but the row IS added to the Sheet
+    msg.textContent = '✅ Exit registered!'; msg.style.color = 'var(--sv)';
+    toast('✅ ' + qty + ' units removed → ' + destination);
+    setTimeout(exitModalClose, 1500);
+  } catch(err){
+    console.error('Exit error:', err);
+    msg.textContent = '❌ Error: ' + err.message; msg.style.color = 'var(--dw)';
+  }
+}
+
+// ── EXIT MANUAL (producto NO encontrado) ───────────────────────────────
+function manualExitOpen(){
+  $('manual-sku').value = window._lastScannedUpc || '';
+  $('manual-qty').value = '';
+  $('manual-reason').value = 'Not selling';
+  $('manual-destination').value = 'Whatnot';
+  $('manual-notes').value = '';
+  $('manual-msg').textContent = '';
+  $('manual-exit-overlay').classList.add('on');
+}
+
+function manualExitClose(){
+  $('manual-exit-overlay').classList.remove('on');
+}
+
+async function manualExitSubmit(){
+  const sku = $('manual-sku').value.trim();
+  const product = sku;  // Product = scanned barcode/SKU
+  const qty = parseInt($('manual-qty').value) || 0;
+  const reason = $('manual-reason').value.trim();
+  const destination = $('manual-destination').value.trim();
+  const notes = $('manual-notes').value.trim();
+  const msg = $('manual-msg');
+
+  if(!sku){ msg.textContent = '⚠️ Enter the UPC or SKU'; msg.style.color = 'var(--dw)'; return; }
+  if(!qty || qty <= 0){ msg.textContent = '⚠️ Enter a valid quantity'; msg.style.color = 'var(--dw)'; return; }
+  if(!reason){ msg.textContent = '⚠️ Select a reason'; msg.style.color = 'var(--dw)'; return; }
+  if(!destination){ msg.textContent = '⚠️ Select a destination'; msg.style.color = 'var(--dw)'; return; }
+
+  msg.textContent = '📤 Registering exit...'; msg.style.color = 'var(--mu)';
+
+  try {
+    const payload = { sku, product, quantity: qty, reason, destination, user: 'demo', notes: (notes ? notes + ' [MANUAL]' : 'Manual removal'), timestamp: new Date().toISOString() };
+    await fetch(EXIT_WEBHOOK_URL, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(payload) });
+    // With mode:no-cors we can't read the response, but the row IS added to the Sheet
+    msg.textContent = '✅ Exit registered!'; msg.style.color = 'var(--sv)';
+    toast('✅ ' + qty + ' units removed → ' + destination);
+    setTimeout(function(){ manualExitClose(); showScreen('scr-home'); }, 1500);
+  } catch(err){
+    console.error('Manual exit error:', err);
+    msg.textContent = '❌ Error: ' + err.message; msg.style.color = 'var(--dw)';
+  }
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// IDENTIFY BY PHOTO — BETA (Phase 1)
+// "PHOTO FINDS. SELLBRITE CONFIRMS." — an eBay photo match is discovery
+// only, never inventory confirmation. selectPhotoCandidate() below only
+// ever hands off to the EXISTING, unmodified searchUPC() (which queries
+// Sellbrite via SB_PROXY exactly like a normal barcode scan) once the
+// backend's own Sellbrite-backed /verify step has confirmed a real GTIN.
+// This section is purely additive: it defines new functions/constants
+// only and does not modify any existing function above it.
+// ═════════════════════════════════════════════════════════════════════════
+
+// Dedicated STAGING-only deployment of savvy-ebay-prices for this BETA
+// feature — deliberately a SEPARATE Railway service from BOTH:
+//   - SB_PROXY (below): the frozen fork Inventory's existing barcode/
+//     Sellbrite/ShipStation workflow uses. It never received the new
+//     /api/identify-by-photo routes and must stay untouched.
+//   - the shared backend Product Scanner and Clothing & Shoes use for
+//     their live traffic. Inventory's BETA feature must NEVER call that
+//     deployment — see PHASE1_STAGING_DEPLOYMENT.md. Its hostname must
+//     never appear in this file, even in a comment.
+// NOT CONFIGURED YET. Left blank on purpose until the dedicated staging
+// Railway service for this feature exists and is approved — see the
+// deployment-readiness report. identifyPhotoFetch() below fails closed
+// (a clear, caught error) rather than falling back to any real hostname
+// while this is empty.
+const SAVVY_API_STAGING = 'https://resourceful-passion-production-aa22.up.railway.app';
+
+// Separate auth-fetch helper — deliberately NOT a call to savvyAuthFetch.
+// It reuses the same Bearer session token, with the same origin-pinning
+// safety check, but on 401/403 it does NOT clear the session or force a
+// re-login like savvyAuthFetch does. This feature talks to a different
+// backend deployment than SB_PROXY; an auth hiccup here must never log
+// the employee out of the working barcode-scan workflow. Callers handle
+// 401/403 locally (see handlePhotoFileSelected/selectPhotoCandidate).
+async function identifyPhotoFetch(path, options={}){
+  if(!SAVVY_API_STAGING){
+    throw new Error('identify_photo_not_configured');
+  }
+
+  const token = getToken();
+  if(!token){ throw new Error('no_session'); }
+
+  const backendUrl = new URL(SAVVY_API_STAGING);
+  let requestUrl;
+  try {
+    requestUrl = (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//'))
+      ? new URL(path)
+      : new URL(path, SAVVY_API_STAGING);
+  } catch(e){
+    throw new Error('Invalid URL construction');
+  }
+  if(requestUrl.origin !== backendUrl.origin){
+    throw new Error('Origin mismatch: ' + requestUrl.origin + ' !== ' + backendUrl.origin);
+  }
+
+  const headers = new Headers(options.headers || {});
+  headers.set('Authorization', 'Bearer ' + token);
+  headers.set('Content-Type', 'application/json');
+
+  return fetch(requestUrl.href, { ...options, headers });
+}
+
+function openPhotoIdentify(){
+  const preview = $('photo-preview-img');
+  if(preview){ preview.style.display = 'none'; preview.src = ''; }
+  const camIn = $('photo-input-camera'); if(camIn) camIn.value = '';
+  const libIn = $('photo-input-library'); if(libIn) libIn.value = '';
+  showScreen('scr-photo-capture');
+}
+
+// ── Client-side compression/normalization (canvas, no external library) ──
+// Resizes to a max 1024px side and re-encodes as JPEG quality 0.8, well
+// under the backend's payload/size limits. Returns raw base64 (no
+// "data:image/jpeg;base64," prefix), matching what /api/identify-by-photo
+// expects.
+function compressImageToBase64(file, maxDim=1024, quality=0.8){
+  return new Promise((resolve, reject) => {
+    if(!file || !file.type || file.type.indexOf('image/') !== 0){
+      reject(new Error('not_an_image'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read_failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode_failed'));
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if(!w || !h){ reject(new Error('decode_failed')); return; }
+        if(w > h && w > maxDim){ h = Math.round(h * (maxDim / w)); w = maxDim; }
+        else if(h >= w && h > maxDim){ w = Math.round(w * (maxDim / h)); h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        const base64 = (dataUrl.split(',')[1]) || '';
+        if(!base64){ reject(new Error('encode_failed')); return; }
+        resolve(base64);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handlePhotoFileSelected(fileInput){
+  const file = fileInput.files && fileInput.files[0];
+  if(!file) return;
+
+  const preview = $('photo-preview-img');
+  if(preview){
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'block';
+  }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Analyzing photo...';
+
+  try {
+    const base64 = await compressImageToBase64(file);
+    const res = await identifyPhotoFetch('/api/identify-by-photo', {
+      method: 'POST',
+      body: JSON.stringify({ image: base64 })
+    });
+
+    if(res.status === 401 || res.status === 403){
+      toast('❌ Identify by Photo is unavailable right now. Barcode scan still works normally.', 4000);
+      showScreen('scr-home');
+      return;
+    }
+
+    const data = await res.json().catch(() => ({}));
+
+    if(!res.ok || data.status === 'error'){
+      toast('❌ Could not analyze photo (' + (data.error || res.status) + ')');
+      showScreen('scr-home');
+      return;
+    }
+
+    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    if(candidates.length === 0){
+      toast('🔍 No possible matches found for that photo');
+      showScreen('scr-home');
+      return;
+    }
+
+    renderPhotoCandidates(candidates);
+    showScreen('scr-photo-candidates');
+
+  } catch(err){
+    console.error('Identify by photo error:', err);
+    if(err && err.message === 'identify_photo_not_configured'){
+      toast('🧪 Identify by Photo BETA is not yet available in this environment.', 3500);
+    } else {
+      toast('❌ Error analyzing photo: ' + (err.message || err));
+    }
+    showScreen('scr-home');
+  }
+}
+
+function renderPhotoCandidates(candidates){
+  const el = $('photo-candidates-content');
+  if(!el) return;
+  el.innerHTML = candidates.map(c => {
+    const imgUrl = c.image ? String(c.image) : '';
+    const img = imgUrl
+      ? `<img class="img" src="${imgUrl}" onerror="this.style.display='none'">`
+      : `<div class="img" style="display:flex;align-items:center;justify-content:center;font-size:24px">📦</div>`;
+    const priceVal = c.price && c.price.value ? parseFloat(c.price.value) : NaN;
+    const price = !isNaN(priceVal)
+      ? `<div class="price">$${priceVal.toFixed(2)} ${(c.price.currency || '')}</div>`
+      : '';
+    const itemId = String(c.item_id || '');
+    const rankNum = parseInt(c.rank, 10) || 0;
+    const titleText = String(c.title || 'Unnamed item');
+    return `
+    <div class="candidate-card">
+      ${img}
+      <div class="info">
+        <div class="rank">Possible Match #${rankNum || ''}</div>
+        <div class="title"></div>
+        ${price}
+        <button class="btn" data-item-id="${itemId.replace(/"/g,'&quot;')}" data-rank="${rankNum}" onclick="selectPhotoCandidate(this.dataset.itemId, parseInt(this.dataset.rank,10))" ontouchend="event.preventDefault();selectPhotoCandidate(this.dataset.itemId, parseInt(this.dataset.rank,10))">Select Product</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Set candidate titles via textContent (not innerHTML) so an eBay
+  // listing title can never inject markup into the page.
+  const cards = el.querySelectorAll('.candidate-card');
+  candidates.forEach((c, i) => {
+    const titleEl = cards[i] && cards[i].querySelector('.title');
+    if(titleEl) titleEl.textContent = String(c.title || 'Unnamed item');
+  });
+}
+
+async function selectPhotoCandidate(itemId, rank){
+  if(!itemId){ toast('⚠️ Invalid candidate'); return; }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Verifying against inventory...';
+
+  try {
+    const res = await identifyPhotoFetch('/api/identify-by-photo/verify', {
+      method: 'POST',
+      body: JSON.stringify({ item_id: itemId, rank: rank })
+    });
+
+    if(res.status === 401 || res.status === 403){
+      toast('❌ Identify by Photo is unavailable right now. Barcode scan still works normally.', 4000);
+      showScreen('scr-home');
+      return;
+    }
+
+    const data = await res.json().catch(() => ({}));
+
+    if(!res.ok || data.status === 'error'){
+      showPhotoVerifyFailed('Verification failed. Please try again or enter the UPC manually.');
+      return;
+    }
+
+    if(data.verified && data.upc){
+      // The staging backend only confirms the candidate has a real,
+      // checksum-valid GTIN (Option B — it never touches Sellbrite).
+      // Sellbrite remains the actual source of truth: confirm the UPC
+      // there next, through Inventory's EXISTING SB_PROXY integration.
+      await confirmUpcInSellbriteAndShow(data.upc);
+      return;
+    }
+
+    showPhotoVerifyFailed('Could not extract a valid product identifier from this match.');
+
+  } catch(err){
+    console.error('Verify by photo error:', err);
+    if(err && err.message === 'identify_photo_not_configured'){
+      toast('🧪 Identify by Photo BETA is not yet available in this environment.', 3500);
+      showScreen('scr-home');
+      return;
+    }
+    showPhotoVerifyFailed('Verification failed. Please try again or enter the UPC manually.');
+  }
+}
+
+// ── Sellbrite confirmation (Option B) ────────────────────────────────
+// Deliberately NOT a call to the new staging backend — it reuses
+// Inventory's EXISTING, unmodified savvyAuthFetch()/showProductFromProxy()
+// against SB_PROXY, the exact same /sb/search path the barcode-scan flow
+// already uses. This is the actual "SELLBRITE CONFIRMS" step; it's the
+// only place in the whole photo-identify feature that talks to Sellbrite
+// at all, and it does so through code that was already proven in
+// production, unmodified.
+async function confirmUpcInSellbriteAndShow(upc){
+  if(!isAuthenticated()){ showLoginScreen(); return; }
+  const upcClean = String(upc || '').replace(/\D/g,'');
+  if(!upcClean){ showPhotoVerifyFailed('No valid UPC to confirm.'); return; }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Confirming in Sellbrite: ' + upcClean + '...';
+
+  try {
+    const res = await savvyAuthFetch('/sb/search?upc=' + encodeURIComponent(upcClean));
+    const data = await res.json();
+
+    if(res.status === 404 || data.status === 'not_found'){
+      sendPhotoFeedback('sellbrite_not_found');
+      showPhotoVerifyFailed('This UPC was not found in Sellbrite.');
+      return;
+    }
+
+    if(!res.ok || data.status === 'error'){
+      sendPhotoFeedback('sellbrite_not_found');
+      showPhotoVerifyFailed('Could not confirm this product in Sellbrite. Please try again or enter the UPC manually.');
+      return;
+    }
+
+    sendPhotoFeedback('sellbrite_confirmed');
+    // Same rendering path a normal barcode scan uses — unmodified.
+    await showProductFromProxy(data, upcClean);
+
+  } catch(err){
+    console.error('Sellbrite confirm error:', err);
+    sendPhotoFeedback('sellbrite_not_found');
+    showPhotoVerifyFailed('Could not confirm this product in Sellbrite. Please try again or enter the UPC manually.');
+  }
+}
+
+function showPhotoVerifyFailed(msg){
+  const el = $('photo-verify-fail-msg');
+  if(el) el.textContent = msg || 'This match could not be confirmed.';
+  showScreen('scr-photo-verify-fail');
+}
+
+// Best-effort beta metrics — must never block or fail the UI action
+// it's attached to.
+function sendPhotoFeedback(event){
+  try {
+    identifyPhotoFetch('/api/identify-by-photo/feedback', {
+      method: 'POST',
+      body: JSON.stringify({ event: event })
+    }).catch(() => {});
+  } catch(e) { /* metrics must never break the workflow */ }
+}
+
+function tryAnotherPhoto(){
+  sendPhotoFeedback('try_another_photo_used');
+  openPhotoIdentify();
+}
+
+function enterUpcManually(){
+  sendPhotoFeedback('manual_upc_fallback_used');
+  showScreen('scr-home');
+  const input = $('manualUpc');
+  if(input) setTimeout(() => input.focus(), 50);
+}
+
+</script>
+
+<!-- MULTI-LOCATION MODAL -->
+<div id="loc-modal-overlay" class="loc-modal-overlay">
+  <div class="loc-modal-content">
+    <div class="loc-modal-section">
+      <div class="loc-modal-section-title">📷 Escanear QR</div>
+      <div id="loc-modal-qr-reader"></div>
+      <div id="loc-modal-qr-msg" class="loc-modal-msg">Apunta a un código QR de localización</div>
+    </div>
+
+    <div class="loc-modal-section">
+      <div class="loc-modal-section-title">⌨️ O escribe manualmente</div>
+      <input type="text" id="loc-modal-manual-input" class="loc-modal-manual-input" 
+             placeholder="Ej: A-1, A-2, B-5..." inputmode="text" autocapitalize="characters">
+      <div id="loc-modal-manual-msg" class="loc-modal-msg"></div>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button class="loc-modal-btn" onclick="locModalManualAdd()">✅ Agregar</button>
+      <button class="loc-modal-btn sec" onclick="locModalClose()">❌ Cerrar</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- EXIT INVENTORY MODAL (product found) -->
+<div id="exit-modal-overlay" class="exit-modal-overlay">
+  <div class="exit-modal-content">
+    <div style="text-align:center;font-size:18px;font-weight:800;color:var(--dw);margin-bottom:4px">🚪 Remove from Inventory</div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">SKU</label>
+      <input type="text" id="exit-sku" class="exit-input" readonly style="background:var(--bd);color:var(--mu)">
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">Product</label>
+      <input type="text" id="exit-product" class="exit-input" readonly style="background:var(--bd);color:var(--mu)">
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">⚠️ Quantity to Remove</label>
+      <input type="number" id="exit-qty" class="exit-input" placeholder="E.g.: 5" min="1" inputmode="numeric">
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">Reason (why remove it?)</label>
+      <select id="exit-reason" class="exit-select">
+        <option value="Not selling">Not selling</option>
+        <option value="Damaged">Damaged</option>
+        <option value="Obsolete">Obsolete</option>
+        <option value="Defective">Defective</option>
+        <option value="Transfer">Transfer</option>
+        <option value="End of batch">End of batch</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">📍 Destination (where to send it?)</label>
+      <select id="exit-destination" class="exit-select">
+        <option value="Whatnot">Whatnot</option>
+        <option value="DWI">DWI</option>
+      </select>
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">Notes (optional)</label>
+      <textarea id="exit-notes" class="exit-textarea" placeholder="E.g.: Old stock, wet box, etc"></textarea>
+    </div>
+    <div id="exit-msg" class="exit-msg"></div>
+    <div style="display:flex;gap:8px">
+      <button class="exit-btn" onclick="exitSubmit()" ontouchend="event.preventDefault();exitSubmit()" style="flex:1">✅ Register Exit</button>
+      <button class="exit-btn cancel" onclick="exitModalClose()" ontouchend="event.preventDefault();exitModalClose()" style="flex:1">❌ Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- MANUAL EXIT MODAL (product NOT found) -->
+<div id="manual-exit-overlay" class="exit-modal-overlay">
+  <div class="exit-modal-content">
+    <div style="text-align:center;font-size:18px;font-weight:800;color:var(--dw);margin-bottom:4px">🚪 Manual Removal</div>
+    <div style="text-align:center;font-size:12px;color:var(--mu);margin-bottom:4px">Product not listed in Sellbrite/ShipStation</div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">UPC / SKU (scanned)</label>
+      <input type="text" id="manual-sku" class="exit-input" placeholder="UPC or SKU">
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">⚠️ Quantity to Remove</label>
+      <input type="number" id="manual-qty" class="exit-input" placeholder="E.g.: 5" min="1" inputmode="numeric">
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">Reason (why remove it?)</label>
+      <select id="manual-reason" class="exit-select">
+        <option value="Not selling">Not selling</option>
+        <option value="Damaged">Damaged</option>
+        <option value="Obsolete">Obsolete</option>
+        <option value="Defective">Defective</option>
+        <option value="Not listed">Not listed</option>
+        <option value="Transfer">Transfer</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">📍 Destination (where to send it?)</label>
+      <select id="manual-destination" class="exit-select">
+        <option value="Whatnot">Whatnot</option>
+        <option value="DWI">DWI</option>
+      </select>
+    </div>
+    <div class="exit-field-group">
+      <label class="exit-field-label">Notes (optional)</label>
+      <textarea id="manual-notes" class="exit-textarea" placeholder="E.g.: Found in warehouse, unlisted"></textarea>
+    </div>
+    <div id="manual-msg" class="exit-msg"></div>
+    <div style="display:flex;gap:8px">
+      <button class="exit-btn" onclick="manualExitSubmit()" ontouchend="event.preventDefault();manualExitSubmit()" style="flex:1">✅ Register Exit</button>
+      <button class="exit-btn cancel" onclick="manualExitClose()" ontouchend="event.preventDefault();manualExitClose()" style="flex:1">❌ Cancel</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
