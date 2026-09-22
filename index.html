@@ -574,8 +574,11 @@ async function searchUPC(upc){
   renderProductDetails(upcClean, onlineResult);
   showScreen('scr-product-details');
 
-  // Independent, non-blocking — never gates the screen above.
-  loadSellbriteStatus(upcClean);
+  // Independent, non-blocking — never gates the screen above. Passes the
+  // online-identified brand/title through so the EXISTING /sb/search fast
+  // path (see deriveBrandCandidates below) can be used instead of falling
+  // into full paginated catalog scanning.
+  loadSellbriteStatus(upcClean, onlineResult && onlineResult.identity);
 }
 
 // Escapes externally-sourced text (eBay titles/brands/categories, Sellbrite
@@ -649,47 +652,121 @@ function renderProductDetails(upc, onlineResult){
   }
 }
 
+// ── BRAND CANDIDATES for Sellbrite's EXISTING /sb/search fast path ──────
+// /sb/search already has a fast path: given a non-generic `brand` param,
+// it builds PREFIX-UPC-Npk candidate SKUs (PREFIX = first 3 letters of
+// brand) and checks them directly — ~24 fast parallel single-SKU lookups
+// — instead of paginating the whole catalog (up to 10 pages / 1000
+// products, which is what was hitting Sellbrite's rate limit). Before
+// this fix, searchUPC() never supplied brand at all, so EVERY lookup fell
+// into full pagination regardless of whether we already knew the brand.
+//
+// This mirrors Product Scanner's own makeSKU() prefix logic EXACTLY
+// (read-only reference — product-scanner-staging/app.js:496, Product
+// Scanner itself is untouched): brand wins when present and non-generic;
+// otherwise the prefix comes from the first significant word of the
+// TITLE. Real-world evidence (UPC 031604032678): eBay's structured
+// `brand` field returns the manufacturer name "Pharmavite," while the
+// actual Sellbrite SKU (NAT-031604032678-1) was built from the
+// consumer-facing name "Nature Made" — the title's own first word.
+// Rather than guess which one is right, both are tried when they differ.
+// Each attempt is the cheap fast path, not a full scan, so trying two is
+// still far cheaper than one interrupted pagination run.
+const SKU_PREFIX_STOPWORDS = new Set(['2x','bundle','pack','new','of','the','and','for','set','lot','value']);
+
+function _skuPrefixFrom(str){
+  return String(str || '').replace(/[^a-zA-Z]/g,'').substring(0,3).toUpperCase();
+}
+
+function deriveBrandCandidates(identity){
+  if(!identity) return [];
+  const candidates = [];
+  const rawBrand = String(identity.brand || '').trim();
+  const usableBrand = (rawBrand && rawBrand.toLowerCase() !== 'generic') ? rawBrand : '';
+  if(usableBrand) candidates.push(usableBrand);
+
+  const title = String(identity.title || '').trim();
+  if(title){
+    const words = title.replace(/[^a-zA-Z\s]/g,' ').trim().split(/\s+/);
+    const titleWord = words.find(w => w.length > 1 && !SKU_PREFIX_STOPWORDS.has(w.toLowerCase()));
+    if(titleWord && _skuPrefixFrom(titleWord) !== _skuPrefixFrom(usableBrand)){
+      candidates.push(titleWord);
+    }
+  }
+  return candidates;
+}
+
 // ── SELLBRITE STATUS — independent, never gates Product Details ─────────
 // Reuses the EXISTING savvyAuthFetch()/SB_PROXY /sb/search integration,
-// unmodified — the same call the pre-Phase-1 searchUPC() used to make
-// directly. Only what happens with the RESULT has changed.
-async function loadSellbriteStatus(upc){
+// unmodified — same endpoint, same contract, same response shapes. Only
+// two things changed from the original Phase 1 version: (1) it now
+// supplies `brand` candidates so the server's own existing fast path
+// activates instead of full pagination, and (2) it only retries a
+// SECOND candidate on a clean "not found" — NEVER on an error/timeout,
+// since retrying an active rate-limit condition would only make it
+// worse.
+//
+// KNOWN, REPORTED LIMITATION (not fixed here — see final report): if
+// Sellbrite's pagination fallback itself gets interrupted by a rate
+// limit mid-scan, the server currently returns the exact same
+// {"status":"not_found"} response as a genuine "scanned everything,
+// found nothing." That ambiguity is server-side information loss inside
+// /sb/search itself (SB_PROXY's deployment) and cannot be resolved from
+// the frontend alone.
+async function loadSellbriteStatus(upc, identity){
   const el = $('pd-inventory-status');
   el.innerHTML = `<div class="pd-section"><div class="section-label">Inventory Status</div><div style="font-size:13px;color:var(--mu)">Checking Sellbrite...</div></div>`;
 
-  try {
-    const res = await savvyAuthFetch('/sb/search?upc=' + encodeURIComponent(upc));
+  const candidates = deriveBrandCandidates(identity);
+  const attempts = candidates.length ? candidates : [''];
 
-    if(res.status === 404){
-      renderSellbriteStatus('notfound');
+  for(let i = 0; i < attempts.length; i++){
+    const brandParam = attempts[i];
+    const isLastAttempt = (i === attempts.length - 1);
+
+    try {
+      let url = '/sb/search?upc=' + encodeURIComponent(upc);
+      if(brandParam) url += '&brand=' + encodeURIComponent(brandParam);
+      const res = await savvyAuthFetch(url);
+
+      if(res.status === 404){
+        if(!isLastAttempt) continue;
+        renderSellbriteStatus('notfound');
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      if(!res.ok || data.status === 'error'){
+        // Never retry here — an error/rate-limit condition must not be
+        // hammered with a second attempt.
+        renderSellbriteStatus('error');
+        return;
+      }
+      if(data.status === 'not_found'){
+        if(!isLastAttempt) continue;
+        renderSellbriteStatus('notfound');
+        return;
+      }
+
+      let products = data.products;
+      if(!products && data.product){ products = [ {...data.product, inventory: data.inventory} ]; }
+      products = products || [];
+
+      if(products.length === 0){
+        if(!isLastAttempt) continue;
+        renderSellbriteStatus('notfound');
+        return;
+      }
+
+      renderSellbriteStatus('found', products);
       return;
-    }
 
-    const data = await res.json().catch(() => ({}));
-
-    if(!res.ok || data.status === 'error'){
+    } catch(err){
+      console.error('Sellbrite status error:', err);
       renderSellbriteStatus('error');
       return;
     }
-    if(data.status === 'not_found'){
-      renderSellbriteStatus('notfound');
-      return;
-    }
-
-    let products = data.products;
-    if(!products && data.product){ products = [ {...data.product, inventory: data.inventory} ]; }
-    products = products || [];
-
-    if(products.length === 0){
-      renderSellbriteStatus('notfound');
-      return;
-    }
-
-    renderSellbriteStatus('found', products);
-
-  } catch(err){
-    console.error('Sellbrite status error:', err);
-    renderSellbriteStatus('error');
   }
 }
 
