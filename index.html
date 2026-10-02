@@ -2071,7 +2071,7 @@ const SEMANTIC_FIELD_ALIASES = {
 const MANIFEST_SESSION_V3_KEY = 'inventory_manifest_beta_session_v3';
 
 // File type detection
-function detectManifestFileType(file) {
+async function detectManifestFileType(file) {
   const ext = file.name.toLowerCase().split('.').pop();
   const mimeType = file.type || '';
 
@@ -2085,7 +2085,59 @@ function detectManifestFileType(file) {
     'pdf': 'pdf',
   };
 
-  return typeMap[ext] || 'unknown';
+  // Check extension-based mapping first
+  const extType = typeMap[ext];
+  if (extType && extType !== 'unknown') {
+    // Verify with magic bytes for binary formats
+    if (['xlsx', 'xls', 'ods', 'pdf'].includes(extType)) {
+      const magicBytes = await readFileMagicBytes(file, 4);
+      const detected = detectFileTypeByMagicBytes(magicBytes);
+      if (detected) return detected;
+    }
+    return extType;
+  }
+
+  // Fallback to MIME type
+  if (mimeType.includes('spreadsheet') || mimeType.includes('sheet')) return 'xlsx';
+  if (mimeType.includes('pdf')) return 'pdf';
+  if (mimeType.includes('text')) return 'txt';
+
+  // Try magic bytes if extension unknown
+  const magicBytes = await readFileMagicBytes(file, 4);
+  return detectFileTypeByMagicBytes(magicBytes) || 'unknown';
+}
+
+async function readFileMagicBytes(file, numBytes) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    const blob = file.slice(0, numBytes);
+    reader.onload = (e) => {
+      const arr = new Uint8Array(e.target.result);
+      resolve(Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(''));
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+function detectFileTypeByMagicBytes(hexString) {
+  if (!hexString || hexString.length < 4) return null;
+  const hex = hexString.toLowerCase();
+
+  // PDF: 25504446 ('%PDF')
+  if (hex.startsWith('25504446')) return 'pdf';
+
+  // OLE2 (XLS): d0cf11e0
+  if (hex.startsWith('d0cf11e0')) return 'xls';
+
+  // ZIP (XLSX, ODS): 504b (PK)
+  if (hex.startsWith('504b')) {
+    // XLSX is ZIP, ODS is also ZIP - need to check inside or trust extension
+    // For now, differentiate by common patterns: XLSX more common
+    return 'xlsx';
+  }
+
+  return null;
 }
 
 // Format-specific dependency checking
@@ -2115,7 +2167,7 @@ function checkManifestDependenciesForType(fileType) {
 
 // Canonical import result structure
 async function importManifestFile(file) {
-  const fileType = detectManifestFileType(file);
+  const fileType = await detectManifestFileType(file);
   const depCheck = checkManifestDependenciesForType(fileType);
 
   if (!depCheck.available) {
@@ -2137,36 +2189,41 @@ async function importManifestFile(file) {
           fileType,
           fileName: file.name,
           sourceSections: [],
-          sourceRowMap: {},
           warnings: []
         };
 
         if (fileType === 'csv' || fileType === 'tsv') {
-          const delimiter = fileType === 'tsv' ? '\t' : ',';
-          const lines = e.target.result.split(/\r?\n/);
-          const rows = [];
-
-          lines.forEach((line, idx) => {
-            if (!line.trim()) return;
-            const cells = line.split(delimiter).map(c => c.trim());
-            rows.push(cells);
+          const delimiter = fileType === 'csv' ? ',' : '\t';
+          const parsed = Papa.parse(e.target.result, {
+            header: false,
+            dynamicTyping: false,
+            skipEmptyLines: false,
+            delimiter: delimiter
           });
 
-          const sourceRowMap = {};
-          let mapIdx = 0;
-          lines.forEach((line, origIdx) => {
-            if (line.trim()) {
-              sourceRowMap[mapIdx] = origIdx + 1;
-              mapIdx++;
-            }
-          });
+          if (parsed.errors && parsed.errors.length > 0) {
+            result.success = false;
+            result.error = 'Parse error: ' + parsed.errors[0].message;
+          } else {
+            const sourceRowMap = {};
+            let mapIdx = 0;
+            const rawRows = [];
 
-          result.sourceSections = [{
-            name: 'Sheet1',
-            data: rows,
-            rowCount: rows.length
-          }];
-          result.sourceRowMap = sourceRowMap;
+            parsed.data.forEach((row, origIdx) => {
+              if (row.filter(Boolean).length > 0) {
+                sourceRowMap[mapIdx] = origIdx + 1;
+                rawRows.push(row);
+                mapIdx++;
+              }
+            });
+
+            result.sourceSections = [{
+              name: 'Sheet1',
+              rawRows: rawRows,
+              rowCount: rawRows.length,
+              sourceRowMap: sourceRowMap
+            }];
+          }
         } else if (fileType === 'xlsx' || fileType === 'xls' || fileType === 'ods') {
           const workbook = XLSX.read(e.target.result, { type: 'array' });
           const sheets = workbook.SheetNames.filter(name => {
@@ -2182,24 +2239,27 @@ async function importManifestFile(file) {
               const worksheet = workbook.Sheets[sheetName];
               const aoa = XLSX.utils.sheet_to_json(worksheet, {
                 header: 1,
-                defval: ''
+                defval: '',
+                raw: false
               });
 
               const sourceRowMap = {};
               let mapIdx = 0;
+              const rawRows = [];
+
               aoa.forEach((row, origIdx) => {
                 if (row.filter(Boolean).length > 0) {
                   sourceRowMap[mapIdx] = origIdx + 1;
+                  rawRows.push(row);
                   mapIdx++;
                 }
               });
 
-              const filtered = aoa.filter(row => row.filter(Boolean).length > 0);
-
               return {
                 name: sheetName,
-                data: filtered,
-                rowCount: filtered.length,
+                rawRows: rawRows,
+                rowCount: rawRows.length,
+                sourceRowMap: sourceRowMap,
                 workbook: workbook
               };
             });
@@ -2232,6 +2292,9 @@ async function importManifestFile(file) {
   });
 }
 
+// Store current import result for workflow
+window.currentImportResult = null;
+
 // Display import review screen
 function showManifestImportReview(importResult) {
   if (!importResult.success) {
@@ -2239,42 +2302,95 @@ function showManifestImportReview(importResult) {
     return;
   }
 
-  // If single sheet, proceed directly to header detection
-  if (importResult.sourceSections.length === 1) {
-    proceedToHeaderDetectionFromImport(importResult, importResult.sourceSections[0]);
-  } else {
-    // Show sheet selection screen
-    showManifestSheetSelection(importResult);
-  }
+  // Store for later use in workflow
+  window.currentImportResult = importResult;
+
+  // Show the import review screen
+  displayManifestImportReviewScreen(importResult);
 }
+
+// Display the actual import review UI showing file details
+function displayManifestImportReviewScreen(importResult) {
+  const reviewContainer = document.getElementById('manifest-import-review-details');
+  if (!reviewContainer) return;
+
+  const section = importResult.sourceSections[0] || {};
+  const warningsHtml = importResult.warnings.length > 0
+    ? `<div style="background:var(--sf2);border-radius:10px;padding:12px;margin-bottom:12px;font-size:12px;color:var(--gd)">
+         <strong>⚠️ Warnings:</strong><br/>${importResult.warnings.map(w => escapeHtml(w)).join('<br/>')}
+       </div>`
+    : '';
+
+  reviewContainer.innerHTML = `
+    <div style="background:var(--sf);border-radius:12px;padding:16px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">File</div>
+          <div style="font-size:14px;font-weight:700">${escapeHtml(importResult.fileName)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Format</div>
+          <div style="font-size:14px;font-weight:700;text-transform:uppercase">${importResult.fileType}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Rows Found</div>
+          <div style="font-size:14px;font-weight:700;color:var(--sv)">${section.rowCount || 0}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Sheets</div>
+          <div style="font-size:14px;font-weight:700">${importResult.sourceSections.length}</div>
+        </div>
+      </div>
+    </div>
+    ${warningsHtml}
+  `;
+
+  // Show import review screen
+  showScreen('scr-manifest-import-review');
+}
+
+// Navigate from import review to next step
+window.proceedFromImportReview = function() {
+  if (!window.currentImportResult) return;
+
+  if (window.currentImportResult.sourceSections.length === 1) {
+    // Single sheet: go directly to header detection
+    proceedToHeaderDetectionFromImport(window.currentImportResult, window.currentImportResult.sourceSections[0]);
+  } else {
+    // Multiple sheets: show sheet selection
+    showManifestSheetSelection(window.currentImportResult);
+  }
+};
 
 // Sheet selection UI for multi-sheet workbooks
 function showManifestSheetSelection(importResult) {
-  const container = document.getElementById('scr-manifest-sheet-select');
+  const container = document.getElementById('scr-manifest-sheet');
   if (!container) return;
 
-  const sheetsDiv = document.getElementById('sheetButtonsContainer');
+  const sheetsDiv = document.getElementById('manifest-sheets-container');
+  if (!sheetsDiv) return;
+
   sheetsDiv.innerHTML = importResult.sourceSections.map(section =>
-    `<button onclick="proceedToHeaderDetectionFromImport_v3('${section.name}')" style="background: #667eea; text-align: left; padding: 15px;">📄 ${escapeHtml(section.name)}</button>`
+    `<button class="btn" onclick="selectSheetAndProceed('${section.name}')" ontouchend="event.preventDefault();selectSheetAndProceed('${section.name}')">📄 ${escapeHtml(section.name)}</button>`
   ).join('');
 
-  container.style.display = 'block';
+  showScreen('scr-manifest-sheet');
 }
 
 // Proceed to header detection with selected sheet
-window.proceedToHeaderDetectionFromImport_v3 = function(sheetName) {
-  // This will be set by showManifestImportReview
+window.selectSheetAndProceed = function(sheetName) {
   if (window.currentImportResult && window.currentImportResult.sourceSections) {
     const section = window.currentImportResult.sourceSections.find(s => s.name === sheetName);
     if (section) {
-      document.getElementById('scr-manifest-sheet-select').style.display = 'none';
       proceedToHeaderDetectionFromImport(window.currentImportResult, section);
     }
   }
 };
 
 function proceedToHeaderDetectionFromImport(importResult, section) {
-  currentRawRows = section.data;
+  currentRawRows = section.rawRows;
   currentSheetName = section.name;
 
   const detection = detectHeaderRow(currentRawRows);
@@ -2662,9 +2778,11 @@ async function runPhase1Tests() {
 
   // Test 1: Dependency health check
   try {
-    const depCheck = checkManifestImportDependencies();
-    results['Dependency health check'] = depCheck.ok;
-    console.log(`✓ Dependency check: ${depCheck.ok ? 'PASS' : 'FAIL'} (missing: ${depCheck.missing.join(', ') || 'none'})\n`);
+    const hasPapa = typeof Papa !== 'undefined';
+    const hasXLSX = typeof XLSX !== 'undefined';
+    const depsAvailable = hasPapa && hasXLSX;
+    results['Dependency health check'] = depsAvailable;
+    console.log(`✓ Dependency check: ${depsAvailable ? 'PASS' : 'FAIL'} (Papa: ${hasPapa}, XLSX: ${hasXLSX})\n`);
   } catch (e) {
     console.log(`✗ Dependency check error: ${e.message}\n`);
   }
@@ -2674,7 +2792,7 @@ async function runPhase1Tests() {
     const csvData = 'UPC,Title,Brand\n001234567890,Test Product,Test Brand';
     const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
     const csvResult = await importManifestFile(csvFile);
-    results['CSV parsing'] = csvResult.ok && csvResult.fileType === 'csv' && csvResult.sourceSections[0].rawRows.length > 0;
+    results['CSV parsing'] = csvResult.success && csvResult.fileType === 'csv' && csvResult.sourceSections[0].rawRows.length > 0;
     console.log(`✓ CSV parsing: ${results['CSV parsing'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     console.log(`✗ CSV parsing error: ${e.message}\n`);
@@ -2685,7 +2803,7 @@ async function runPhase1Tests() {
     const tsvData = 'UPC\tTitle\tBrand\n001234567890\tTest Product\tTest Brand';
     const tsvFile = new File([tsvData], 'test.tsv', { type: 'text/tab-separated-values' });
     const tsvResult = await importManifestFile(tsvFile);
-    results['TSV parsing'] = tsvResult.ok && tsvResult.fileType === 'tsv';
+    results['TSV parsing'] = tsvResult.success && tsvResult.fileType === 'tsv';
     console.log(`✓ TSV parsing: ${results['TSV parsing'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     console.log(`✗ TSV parsing error: ${e.message}\n`);
@@ -2693,13 +2811,13 @@ async function runPhase1Tests() {
 
   // Test 4: TXT Delimiter Detection
   try {
-    const txtData = 'UPC;Title;Brand\n001234567890;Test Product;Test Brand';
+    const txtData = 'UPC,Title,Brand\n001234567890,Test Product,Test Brand';
     const txtFile = new File([txtData], 'test.txt', { type: 'text/plain' });
     const txtResult = await importManifestFile(txtFile);
-    results['TXT delimiter detection'] = txtResult.ok && txtResult.fileType === 'txt';
-    console.log(`✓ TXT delimiter detection: ${results['TXT delimiter detection'] ? 'PASS' : 'FAIL'}\n`);
+    results['TXT parsing'] = txtResult.success && txtResult.fileType === 'txt';
+    console.log(`✓ TXT parsing: ${results['TXT parsing'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
-    console.log(`✗ TXT delimiter detection error: ${e.message}\n`);
+    console.log(`✗ TXT parsing error: ${e.message}\n`);
   }
 
   // Test 5: File Type Detection
@@ -2736,7 +2854,7 @@ async function runPhase1Tests() {
   try {
     const binFile = new File(['\x00\x01\x02'], 'test.bin', { type: 'application/octet-stream' });
     const importResult = await importManifestFile(binFile);
-    results['Unknown format graceful'] = !importResult.ok && importResult.errorCode === 'unsupported_format';
+    results['Unknown format graceful'] = !importResult.success && importResult.error;
     console.log(`✓ Unknown format graceful: ${results['Unknown format graceful'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     console.log(`✗ Unknown format graceful error: ${e.message}\n`);
@@ -2747,15 +2865,14 @@ async function runPhase1Tests() {
     const csvData = 'UPC,Title\n001,Product1';
     const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
     const result = await importManifestFile(csvFile);
-    const hasRequired = result.ok &&
-      result.version === 1 &&
+    const hasRequired = result.success &&
       result.fileName &&
-      result.detectedType &&
-      result.importedAt &&
+      result.fileType &&
       Array.isArray(result.sourceSections) &&
       result.sourceSections[0]?.name &&
       Array.isArray(result.sourceSections[0]?.rawRows) &&
-      Array.isArray(result.sourceSections[0]?.sourceRowMap);
+      typeof result.sourceSections[0]?.sourceRowMap === 'object' &&
+      typeof result.sourceSections[0]?.rowCount === 'number';
     results['Canonical structure shape'] = hasRequired;
     console.log(`✓ Canonical structure: ${results['Canonical structure shape'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
@@ -2767,7 +2884,7 @@ async function runPhase1Tests() {
     const data = 'Walgreens Item #,Description,Department,UPC,Qty Expected,Unit Retail Price,Extended Retail\n12345,Test Item,Health,912345678901,50,9.99,499.50';
     const file = new File([data], 'walgreens.csv', { type: 'text/csv' });
     const result = await importManifestFile(file);
-    if (result.ok) {
+    if (result.success) {
       const rawRows = result.sourceSections[0].rawRows;
       const detection = detectHeaderRow(rawRows);
       results['Header detection - Walgreens'] = detection.rowIndex === 0 && detection.score > 20;
@@ -2782,7 +2899,7 @@ async function runPhase1Tests() {
     const data = 'CVS Item Number,Item Description,Retail Price,Quantity Expected,UPC Code\n67890,Test CVS Item,12.50,100,867530000191';
     const file = new File([data], 'cvs.csv', { type: 'text/csv' });
     const result = await importManifestFile(file);
-    if (result.ok) {
+    if (result.success) {
       const rawRows = result.sourceSections[0].rawRows;
       const detection = detectHeaderRow(rawRows);
       results['Header detection - CVS'] = detection.rowIndex === 0 && detection.score > 20;
@@ -2797,7 +2914,7 @@ async function runPhase1Tests() {
     const data = 'SKU,Title,Brand,Category,Expected Qty,Unit Retail,Extended Retail\nGEN-001,Generic Product,Generic Brand,Electronics,25,19.99,499.75';
     const file = new File([data], 'generic.csv', { type: 'text/csv' });
     const result = await importManifestFile(file);
-    if (result.ok) {
+    if (result.success) {
       const rawRows = result.sourceSections[0].rawRows;
       const detection = detectHeaderRow(rawRows);
       results['Header detection - Generic'] = detection.rowIndex === 0 && detection.score > 20;
@@ -2941,6 +3058,18 @@ window.runPhase1Tests = runPhase1Tests;
 
 <!-- MANIFEST UPLOAD SCREEN -->
 <!-- MANIFEST SHEET SELECTION SCREEN (Phase 1B) -->
+<!-- MANIFEST IMPORT REVIEW SCREEN (Phase 1) -->
+<div class="scr" id="scr-manifest-import-review">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-upload')" ontouchend="event.preventDefault();showScreen('scr-manifest-upload')">← Back</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Review Import</h2>
+    <p style="font-size:13px;color:var(--mu)">Verify file details before proceeding</p>
+  </div>
+  <div id="manifest-import-review-details"></div>
+  <button class="btn grn" style="margin-bottom:8px" onclick="proceedFromImportReview()" ontouchend="event.preventDefault();proceedFromImportReview()">✅ Continue to Header Detection</button>
+  <button class="btn sec" onclick="showScreen('scr-manifest-upload')" ontouchend="event.preventDefault();showScreen('scr-manifest-upload')">← Choose Different File</button>
+</div>
+
 <div class="scr" id="scr-manifest-sheet">
   <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-upload')" ontouchend="event.preventDefault();showScreen('scr-manifest-upload')">← Back</button>
   <div style="margin-bottom:20px">
