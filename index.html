@@ -324,7 +324,7 @@
   <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Cancel</button>
   <div style="margin-bottom:12px">
     <div style="font-size:16px;font-weight:800">Possible Matches</div>
-    <div style="font-size:12px;color:var(--mu);margin-top:4px">Tap a result to verify it against inventory. None of these are confirmed yet.</div>
+    <div style="font-size:12px;color:var(--mu);margin-top:4px">Select the product that matches your photo.</div>
   </div>
   <div id="photo-candidates-content"></div>
   <button class="btn sec" style="margin-top:8px" onclick="tryAnotherPhoto()" ontouchend="event.preventDefault();tryAnotherPhoto()">🔁 Try Another Photo</button>
@@ -1797,7 +1797,7 @@ async function selectPhotoCandidate(itemId, rank){
   if(!itemId){ toast('⚠️ Invalid candidate'); return; }
 
   showScreen('scr-load');
-  $('load-msg').textContent = 'Verifying against inventory...';
+  $('load-msg').textContent = 'Verifying product...';
 
   try {
     const res = await identifyPhotoFetch('/api/identify-by-photo/verify', {
@@ -1819,11 +1819,11 @@ async function selectPhotoCandidate(itemId, rank){
     }
 
     if(data.verified && data.upc){
-      // The staging backend only confirms the candidate has a real,
-      // checksum-valid GTIN (Option B — it never touches Sellbrite).
-      // Sellbrite remains the actual source of truth: confirm the UPC
-      // there next, through Inventory's EXISTING SB_PROXY integration.
-      await confirmUpcInSellbriteAndShow(data.upc);
+      // Backend verified the candidate has a valid, checksum-valid GTIN.
+      // Now use the shared searchUPC() path (same as barcode/manual entry)
+      // for online identification and independent Sellbrite status check.
+      sendPhotoFeedback('photo_upc_verified');
+      await searchUPC(String(data.upc));
       return;
     }
 
