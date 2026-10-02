@@ -9,6 +9,7 @@
   <title>Inventory Manager</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.min.js"></script>
   <style>
     :root {
       --bg:#0d0d0d;--sf:#1a1a1a;--sf2:#242424;--bd:#333;
@@ -2292,6 +2293,301 @@ function confirmClearOrBack(){
     showScreen('scr-home');
   }
 }
+
+// ===== PHASE 1B: ADAPTIVE MANIFEST IMPORTER =====
+
+const SEMANTIC_FIELD_ALIASES = {
+  upc: ['UPC', 'UPC NUMBER', 'UPC #', 'UPC/NDC', 'GTIN', 'EAN', 'BARCODE', 'UPC CODE', 'ITEM NO.'],
+  sku: ['SKU', 'ITEM NUMBER', 'ITEM #', 'PRODUCT CODE', 'PRODUCT #'],
+  title: ['TITLE', 'DESCRIPTION', 'PRODUCT NAME', 'PRODUCT DESCRIPTION', 'DESC', 'NAME'],
+  brand: ['BRAND', 'MANUFACTURER', 'MFR', 'VENDOR', 'SUPPLIER'],
+  category: ['CATEGORY', 'DEPT', 'DEPARTMENT', 'CATEGORY CODE'],
+  expectedQty: ['QUANTITY', 'QTY', 'QTY EXPECTED', 'EXPECTED QTY', 'UNITS', 'COUNT'],
+  palletId: ['PALLET', 'PALLET ID', 'PALLET #', 'PALLET NUMBER'],
+  unitRetail: ['UNIT RETAIL', 'RETAIL UNIT', 'UNIT PRICE', 'MSRP', 'SUGG RETAIL'],
+  extendedRetail: ['EXTENDED RETAIL', 'TOTAL RETAIL', 'RETAIL TOTAL', 'EXTENDED PRICE']
+};
+
+function normalizeHeaderName(name) {
+  return String(name || '').toUpperCase().trim().replace(/[^\w\s]/g, '');
+}
+
+function scoreRowAsHeader(row) {
+  let score = 0;
+  const normalizedRow = row.map(normalizeHeaderName);
+
+  for (const [field, aliases] of Object.entries(SEMANTIC_FIELD_ALIASES)) {
+    for (const alias of aliases) {
+      const normalized = normalizeHeaderName(alias);
+      if (normalizedRow.some(h => h === normalized)) {
+        score += 10;
+        break;
+      }
+    }
+  }
+
+  const hasIdentifier = normalizedRow.some(h =>
+    ['UPC', 'UPCNUMBER', 'SKU', 'ITEMNUMBER', 'TITLE', 'DESCRIPTION'].some(id => h.includes(id))
+  );
+  const hasQuantity = normalizedRow.some(h => h.includes('QUANTITY') || h.includes('QTY'));
+
+  if (hasIdentifier && hasQuantity) score += 20;
+
+  return score;
+}
+
+function detectHeaderRow(rawRows) {
+  let bestRow = 0;
+  let bestScore = 0;
+
+  for (let i = 0; i < Math.min(50, rawRows.length); i++) {
+    const row = rawRows[i];
+    if (!row || row.filter(Boolean).length === 0) continue;
+
+    const score = scoreRowAsHeader(row);
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = i;
+    }
+  }
+
+  return { rowIndex: bestRow, score: bestScore };
+}
+
+let currentRawRows = [];
+let currentWorkbook = null;
+let currentSheetName = null;
+
+function handleCsvFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const csv = e.target.result;
+    const lines = csv.trim().split(/\r?\n/).filter(l => l.trim());
+    currentRawRows = lines.map(line => {
+      const row = [];
+      let field = '';
+      let quoted = false;
+      for (let j = 0; j < line.length; j++) {
+        const char = line[j];
+        if (char === '"') quoted = !quoted;
+        else if (char === ',' && !quoted) {
+          row.push(field.trim());
+          field = '';
+        } else {
+          field += char;
+        }
+      }
+      row.push(field.trim());
+      return row;
+    });
+    proceedWithHeaderDetection();
+  };
+  reader.readAsText(file);
+}
+
+function handleXlsxFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      currentWorkbook = XLSX.read(e.target.result, { type: 'array' });
+      const sheetNames = currentWorkbook.SheetNames.filter(name => {
+        const sheet = currentWorkbook.Sheets[name];
+        return sheet && Object.keys(sheet).length > 1;
+      });
+
+      if (sheetNames.length === 1) {
+        currentSheetName = sheetNames[0];
+        selectSheet(sheetNames[0]);
+      } else if (sheetNames.length > 1) {
+        renderSheetSelection(sheetNames);
+      } else {
+        alert('No sheets with data found');
+      }
+    } catch (error) {
+      alert('Error reading XLSX: ' + error.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function renderSheetSelection(sheetNames) {
+  const container = $('manifest-sheets-container');
+  if (!container) return;
+  container.innerHTML = sheetNames.map(name =>
+    `<button class="btn" onclick="selectSheet('${name}')" style="margin-bottom:8px;width:100%">📄 ${escapeHtml(name)}</button>`
+  ).join('');
+}
+
+function selectSheet(sheetName) {
+  currentSheetName = sheetName;
+  const worksheet = currentWorkbook.Sheets[sheetName];
+  const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+  currentRawRows = aoa.filter(row => row.filter(Boolean).length > 0);
+  proceedWithHeaderDetection();
+}
+
+function proceedWithHeaderDetection() {
+  const detection = detectHeaderRow(currentRawRows);
+  renderHeaderDetectionPreview(detection.rowIndex);
+}
+
+function renderHeaderDetectionPreview(headerRowIndex) {
+  const headerRow = currentRawRows[headerRowIndex] || [];
+  const previewRows = currentRawRows.slice(headerRowIndex + 1, headerRowIndex + 6);
+
+  let html = `<div style="font-size:13px;color:var(--mu);margin-bottom:12px">Detected header at row ${headerRowIndex + 1}</div>`;
+  html += '<div style="background:var(--sf);border-radius:12px;padding:12px;margin-bottom:16px;overflow-x:auto;font-size:12px">';
+  html += headerRow.map((h, i) => `<div style="font-weight:700;margin-bottom:4px">${i + 1}. ${escapeHtml(h)}</div>`).join('');
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px"><button class="btn" onclick="confirmDetectedHeader()">Use This Header</button>';
+  html += '<button class="btn sec" onclick="showScreen(\'scr-manifest-upload\')" style="margin-top:8px">Cancel</button></div>';
+
+  const container = $('manifest-detection-container');
+  if (container) container.innerHTML = html;
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function confirmDetectedHeader() {
+  const detection = detectHeaderRow(currentRawRows);
+  const headerRowIndex = detection.rowIndex;
+  const headerRow = currentRawRows[headerRowIndex];
+  const dataRows = currentRawRows.slice(headerRowIndex + 1);
+
+  manifestSession = {
+    version: 2,
+    id: 'ms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    fileName: currentFile || 'manifest.xlsx',
+    fileType: currentFile && currentFile.endsWith('.xlsx') ? 'xlsx' : 'csv',
+    sheetName: currentSheetName || null,
+    uploadedAt: new Date().toISOString(),
+    headerRowIndex: headerRowIndex,
+    rawHeaders: headerRow,
+    mapping: {},
+    rows: dataRows.map((row, idx) => ({
+      rowId: idx,
+      sourceRowNumber: headerRowIndex + 2 + idx,
+      original: Object.fromEntries(headerRow.map((h, i) => [h, row[i] || ''])),
+      normalized: { upc: '', sku: '', title: '', brand: '', category: '', expectedQty: null, palletId: '', unitRetail: null, extendedRetail: null },
+      receivedQty: 0,
+      status: 'pending',
+      notes: ''
+    })),
+    status: 'mapping',
+    receivedRecords: []
+  };
+
+  renderColumnMappingV2();
+}
+
+function renderColumnMappingV2() {
+  const fields = ['upc', 'sku', 'title', 'brand', 'category', 'expectedQty', 'palletId', 'unitRetail', 'extendedRetail'];
+  const fieldLabels = {
+    upc: 'UPC', sku: 'SKU', title: 'Title', brand: 'Brand', category: 'Category',
+    expectedQty: 'Expected Qty', palletId: 'Pallet ID', unitRetail: 'Unit Retail', extendedRetail: 'Extended Retail'
+  };
+
+  let html = '<div style="margin-bottom:12px"><h3 style="font-size:15px;font-weight:700;margin-bottom:12px">Map Columns</h3>';
+
+  fields.forEach(field => {
+    const suggestions = SEMANTIC_FIELD_ALIASES[field] || [];
+    const matched = manifestSession.rawHeaders.find(h =>
+      suggestions.some(s => normalizeHeaderName(s) === normalizeHeaderName(h))
+    );
+
+    html += `<div style="margin-bottom:12px"><label style="display:block;font-size:12px;font-weight:700;margin-bottom:4px">${fieldLabels[field]}</label>`;
+    html += `<select id="map-${field}" onchange="manifestSession.mapping['${field}'] = this.value" style="width:100%;padding:8px;background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:6px;font-size:13px">`;
+    html += '<option value="">— Not mapped —</option>';
+    manifestSession.rawHeaders.forEach(h => {
+      html += `<option value="${escapeHtml(h)}" ${matched && matched === h ? 'selected' : ''}>${escapeHtml(h)}</option>`;
+    });
+    html += '</select></div>';
+  });
+
+  html += '<button class="btn" onclick="submitManifestMappingV2()" style="margin-top:16px">Continue</button>';
+  html += '<button class="btn sec" onclick="showScreen(\'scr-manifest-upload\')" style="margin-top:8px">Cancel</button></div>';
+
+  const container = $('manifest-mapping-container');
+  if (container) container.innerHTML = html;
+
+  showScreen('scr-manifest-map');
+}
+
+function submitManifestMappingV2() {
+  const hasUpc = !!manifestSession.mapping.upc;
+  const hasSku = !!manifestSession.mapping.sku;
+  const hasTitle = !!manifestSession.mapping.title;
+
+  if (!hasUpc && !hasSku && !hasTitle) {
+    const msgEl = $('manifest-map-msg');
+    if (msgEl) msgEl.textContent = 'At least UPC, SKU or Title required';
+    return;
+  }
+
+  normalizeManifestRowsV2();
+  saveManifestSessionToStorage();
+  renderManifestSummary();
+  showScreen('scr-manifest-summary');
+}
+
+function normalizeManifestRowsV2() {
+  manifestSession.rows.forEach(row => {
+    const m = manifestSession.mapping;
+
+    if (m.upc) row.normalized.upc = String(row.original[m.upc] || '').trim();
+    if (m.sku) row.normalized.sku = String(row.original[m.sku] || '').trim();
+    if (m.title) row.normalized.title = String(row.original[m.title] || '').trim();
+    if (m.brand) row.normalized.brand = String(row.original[m.brand] || '').trim();
+    if (m.category) row.normalized.category = String(row.original[m.category] || '').trim();
+    if (m.palletId) row.normalized.palletId = String(row.original[m.palletId] || '').trim();
+
+    if (m.expectedQty) {
+      const qtyStr = String(row.original[m.expectedQty] || '').trim();
+      const qtyNum = parseInt(qtyStr, 10);
+      row.normalized.expectedQty = (!isNaN(qtyNum) && qtyNum > 0) ? qtyNum : null;
+    }
+
+    if (m.unitRetail) {
+      const retailStr = String(row.original[m.unitRetail] || '').trim();
+      const retailNum = parseFloat(retailStr);
+      row.normalized.unitRetail = (!isNaN(retailNum) && retailNum > 0) ? retailNum : null;
+    }
+
+    if (m.extendedRetail) {
+      const extStr = String(row.original[m.extendedRetail] || '').trim();
+      const extNum = parseFloat(extStr);
+      row.normalized.extendedRetail = (!isNaN(extNum) && extNum > 0) ? extNum : null;
+    }
+  });
+}
+
+const originalHandleManifestFileSelected = window.handleManifestFileSelected;
+window.handleManifestFileSelected = async function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  currentFile = file.name;
+  const msgEl = $('manifest-upload-msg');
+
+  try {
+    if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+      msgEl.textContent = 'Reading XLSX...';
+      handleXlsxFile(file);
+    } else if (file.name.endsWith('.csv')) {
+      msgEl.textContent = 'Reading CSV...';
+      handleCsvFile(file);
+    } else {
+      msgEl.textContent = 'Format not supported (CSV or XLSX only)';
+    }
+  } catch (error) {
+    msgEl.textContent = 'Error: ' + error.message;
+  }
+};
 
 </script>
 
