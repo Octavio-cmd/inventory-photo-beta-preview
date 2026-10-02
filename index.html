@@ -2067,468 +2067,256 @@ const SEMANTIC_FIELD_ALIASES = {
 
 // ===== PHASE 1: UNIVERSAL MANIFEST IMPORTER =====
 
-// STEP 1: DEPENDENCY HEALTH CHECK
-function checkManifestImportDependencies() {
-  const missing = [];
-  if (typeof Papa === 'undefined' || typeof Papa.parse !== 'function') {
-    missing.push('PapaParse');
-  }
-  if (typeof XLSX === 'undefined' || typeof XLSX.read !== 'function') {
-    missing.push('XLSX');
-  }
-  if (typeof XLSX.utils !== 'object' || typeof XLSX.utils.sheet_to_json !== 'function') {
-    missing.push('XLSX.utils');
-  }
-  return {
-    ok: missing.length === 0,
-    missing: missing,
-    timestamp: new Date().toISOString()
-  };
-}
+// Session storage keys
+const MANIFEST_SESSION_V3_KEY = 'inventory_manifest_beta_session_v3';
 
-// STEP 2: FILE TYPE DETECTION
-async function detectManifestFileType(file) {
-  const ext = file.name.toLowerCase().split('.').pop() || '';
+// File type detection
+function detectManifestFileType(file) {
+  const ext = file.name.toLowerCase().split('.').pop();
   const mimeType = file.type || '';
-  let magicBytes = null;
 
-  try {
-    const slice = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(new Uint8Array(e.target.result).slice(0, 8));
-      reader.readAsArrayBuffer(file.slice(0, 8));
-    });
-    magicBytes = Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join('');
-  } catch (e) {
-    // Magic byte detection failed, continue with ext+mime
+  const typeMap = {
+    'csv': 'csv',
+    'tsv': 'tsv',
+    'txt': 'txt',
+    'xlsx': 'xlsx',
+    'xls': 'xls',
+    'ods': 'ods',
+    'pdf': 'pdf',
+  };
+
+  return typeMap[ext] || 'unknown';
+}
+
+// Format-specific dependency checking
+function checkManifestDependenciesForType(fileType) {
+  const checks = {
+    csv: { papa: true, xlsx: false, required: ['papa'] },
+    tsv: { papa: true, xlsx: false, required: ['papa'] },
+    txt: { papa: true, xlsx: false, required: ['papa'] },
+    xlsx: { papa: false, xlsx: true, required: ['xlsx'] },
+    xls: { papa: false, xlsx: true, required: ['xlsx'] },
+    ods: { papa: false, xlsx: true, required: ['xlsx'] },
+    pdf: { papa: false, xlsx: false, required: [] },
+  };
+
+  const config = checks[fileType] || { required: [] };
+  const missing = [];
+
+  if (config.required.includes('papa') && typeof Papa === 'undefined') {
+    missing.push('Papa Parse 5.4.1');
+  }
+  if (config.required.includes('xlsx') && typeof XLSX === 'undefined') {
+    missing.push('SheetJS 0.18.5');
   }
 
-  // Check by extension first
-  if (['csv'].includes(ext)) return 'csv';
-  if (['tsv'].includes(ext)) return 'tsv';
-  if (['txt'].includes(ext)) return 'txt';
-  if (['xlsx'].includes(ext)) return 'xlsx';
-  if (['xls'].includes(ext)) return 'xls';
-  if (['ods'].includes(ext)) return 'ods';
-  if (['pdf'].includes(ext)) return 'pdf';
-  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return 'image';
-
-  // Check by MIME type
-  if (mimeType.includes('text/csv')) return 'csv';
-  if (mimeType.includes('text/tab-separated')) return 'tsv';
-  if (mimeType.includes('text/plain')) return 'txt';
-  if (mimeType.includes('spreadsheet')) return 'xlsx';
-  if (mimeType.includes('pdf')) return 'pdf';
-  if (mimeType.includes('image')) return 'image';
-
-  // Check by magic bytes
-  if (magicBytes) {
-    if (magicBytes.startsWith('504b')) return 'xlsx'; // ZIP signature
-    if (magicBytes.startsWith('d0cf')) return 'xls';  // OLE2 signature
-    if (magicBytes.startsWith('ffd8')) return 'image'; // JPEG
-    if (magicBytes.startsWith('8950')) return 'image'; // PNG
-    if (magicBytes.startsWith('4749')) return 'image'; // GIF
-    if (magicBytes.startsWith('2521')) return 'pdf';   // PDF %!
-  }
-
-  return 'unknown';
+  return { available: missing.length === 0, missing };
 }
 
-// STEP 3: STRUCTURED FORMAT ADAPTERS
-function parseCsvManifest(file, rawData) {
-  return new Promise((resolve) => {
-    const parsed = Papa.parse(rawData, {
-      header: false,
-      dynamicTyping: false,
-      skipEmptyLines: false
-    });
-
-    if (parsed.errors && parsed.errors.length > 0) {
-      resolve({
-        ok: false,
-        errorCode: 'parse_error',
-        message: 'CSV parse failed: ' + parsed.errors[0].message
-      });
-      return;
-    }
-
-    const rawRows = parsed.data.filter(row => row.filter(Boolean).length > 0);
-    resolve({
-      ok: true,
-      fileName: file.name,
-      fileType: 'csv',
-      sourceSections: [{
-        name: 'CSV Data',
-        rawRows: rawRows,
-        sourceRowMap: rawRows.map((_, idx) => idx)
-      }],
-      warnings: []
-    });
-  });
-}
-
-function parseTsvManifest(file, rawData) {
-  return new Promise((resolve) => {
-    const parsed = Papa.parse(rawData, {
-      header: false,
-      delimiter: '\t',
-      dynamicTyping: false,
-      skipEmptyLines: false
-    });
-
-    if (parsed.errors && parsed.errors.length > 0) {
-      resolve({
-        ok: false,
-        errorCode: 'parse_error',
-        message: 'TSV parse failed: ' + parsed.errors[0].message
-      });
-      return;
-    }
-
-    const rawRows = parsed.data.filter(row => row.filter(Boolean).length > 0);
-    resolve({
-      ok: true,
-      fileName: file.name,
-      fileType: 'tsv',
-      sourceSections: [{
-        name: 'TSV Data',
-        rawRows: rawRows,
-        sourceRowMap: rawRows.map((_, idx) => idx)
-      }],
-      warnings: []
-    });
-  });
-}
-
-function parseTxtManifest(file, rawData) {
-  return new Promise((resolve) => {
-    const lines = rawData.split(/\r?\n/).filter(l => l.trim());
-
-    // Try to detect delimiter
-    let delimiter = null;
-    let delimiterConfidence = 0;
-    const delimiters = [
-      { char: '\t', name: 'tab', minConfidence: 0.7 },
-      { char: ',', name: 'comma', minConfidence: 0.7 },
-      { char: ';', name: 'semicolon', minConfidence: 0.6 },
-      { char: '|', name: 'pipe', minConfidence: 0.6 }
-    ];
-
-    for (const delim of delimiters) {
-      const firstLine = lines[0] || '';
-      const delimCount = (firstLine.match(new RegExp('\\' + delim.char, 'g')) || []).length;
-
-      if (delimCount > 0) {
-        const consistency = lines.filter(line => {
-          const lineDelimCount = (line.match(new RegExp('\\' + delim.char, 'g')) || []).length;
-          return lineDelimCount === delimCount;
-        }).length / Math.max(1, lines.length);
-
-        if (consistency >= delim.minConfidence && consistency > delimiterConfidence) {
-          delimiter = delim.char;
-          delimiterConfidence = consistency;
-        }
-      }
-    }
-
-    if (!delimiter || delimiterConfidence < 0.5) {
-      resolve({
-        ok: false,
-        errorCode: 'ambiguous_delimiter',
-        message: 'Could not auto-detect delimiter.',
-        fileName: file.name
-      });
-      return;
-    }
-
-    const rawRows = lines.map(line => line.split(delimiter).map(f => f.trim()));
-    resolve({
-      ok: true,
-      fileName: file.name,
-      fileType: 'txt',
-      sourceSections: [{
-        name: 'TXT Data',
-        rawRows: rawRows,
-        sourceRowMap: rawRows.map((_, idx) => idx)
-      }],
-      warnings: []
-    });
-  });
-}
-
-function parseSpreadsheetManifest(file, fileType, rawData) {
-  return new Promise((resolve) => {
-    try {
-      const workbook = XLSX.read(rawData, { type: 'array' });
-      const sheetNames = workbook.SheetNames.filter(name => {
-        const sheet = workbook.Sheets[name];
-        return sheet && Object.keys(sheet).length > 1;
-      });
-
-      if (sheetNames.length === 0) {
-        resolve({
-          ok: false,
-          errorCode: 'no_sheets',
-          message: 'No valid sheets found in file'
-        });
-        return;
-      }
-
-      const sourceSections = sheetNames.map(sheetName => {
-        const worksheet = workbook.Sheets[sheetName];
-        const aoa = XLSX.utils.sheet_to_json(worksheet, {
-          header: 1,
-          defval: '',
-          raw: false  // KEY: Preserve formatted display text (leading zeros)
-        });
-        const rawRows = aoa.filter(row => row.filter(Boolean).length > 0);
-        return {
-          name: sheetName,
-          rawRows: rawRows,
-          sourceRowMap: rawRows.map((_, idx) => idx)
-        };
-      });
-
-      resolve({
-        ok: true,
-        fileName: file.name,
-        fileType: fileType,
-        sourceSections: sourceSections,
-        warnings: sourceSections.length > 1 ? [`Multiple sheets: ${sourceSections.map(s => s.name).join(', ')}`] : []
-      });
-    } catch (error) {
-      resolve({
-        ok: false,
-        errorCode: 'parse_error',
-        message: 'Spreadsheet parse failed: ' + error.message
-      });
-    }
-  });
-}
-
-// STEP 4: CANONICAL IMPORT STRUCTURE
+// Canonical import result structure
 async function importManifestFile(file) {
-  const depCheck = checkManifestImportDependencies();
-  if (!depCheck.ok) {
+  const fileType = detectManifestFileType(file);
+  const depCheck = checkManifestDependenciesForType(fileType);
+
+  if (!depCheck.available) {
     return {
-      ok: false,
-      errorCode: 'dependency_missing',
-      message: 'Manifest import library failed to load. Refresh and try again.',
-      missingLibs: depCheck.missing
+      success: false,
+      error: `Missing dependencies: ${depCheck.missing.join(', ')}`,
+      fileType,
+      fileName: file.name
     };
   }
 
-  const fileType = await detectManifestFileType(file);
-
-  if (fileType === 'unknown') {
-    return {
-      ok: false,
-      errorCode: 'unsupported_format',
-      message: 'File type not recognized. Supported: CSV, TSV, TXT, Excel, ODS, PDF, images'
-    };
-  }
-
-  if (fileType === 'pdf') {
-    return {
-      ok: false,
-      errorCode: 'pending_parser',
-      message: 'PDF format detected but parser coming in next phase',
-      fileType: 'pdf'
-    };
-  }
-
-  if (fileType === 'image') {
-    return {
-      ok: false,
-      errorCode: 'pending_parser',
-      message: 'Image format detected but OCR coming in future phase',
-      fileType: 'image'
-    };
-  }
-
-  // Read file data
-  const fileData = await new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target.result);
-    reader.onerror = () => reject(new Error('File read failed'));
 
-    if (['xlsx', 'xls', 'ods'].includes(fileType)) {
+    reader.onload = (e) => {
+      try {
+        let result = {
+          success: true,
+          fileType,
+          fileName: file.name,
+          sourceSections: [],
+          sourceRowMap: {},
+          warnings: []
+        };
+
+        if (fileType === 'csv' || fileType === 'tsv') {
+          const delimiter = fileType === 'tsv' ? '\t' : ',';
+          const lines = e.target.result.split(/\r?\n/);
+          const rows = [];
+
+          lines.forEach((line, idx) => {
+            if (!line.trim()) return;
+            const cells = line.split(delimiter).map(c => c.trim());
+            rows.push(cells);
+          });
+
+          const sourceRowMap = {};
+          let mapIdx = 0;
+          lines.forEach((line, origIdx) => {
+            if (line.trim()) {
+              sourceRowMap[mapIdx] = origIdx + 1;
+              mapIdx++;
+            }
+          });
+
+          result.sourceSections = [{
+            name: 'Sheet1',
+            data: rows,
+            rowCount: rows.length
+          }];
+          result.sourceRowMap = sourceRowMap;
+        } else if (fileType === 'xlsx' || fileType === 'xls' || fileType === 'ods') {
+          const workbook = XLSX.read(e.target.result, { type: 'array' });
+          const sheets = workbook.SheetNames.filter(name => {
+            const sheet = workbook.Sheets[name];
+            return sheet && Object.keys(sheet).length > 1;
+          });
+
+          if (sheets.length === 0) {
+            result.success = false;
+            result.error = 'No sheets with data found';
+          } else {
+            result.sourceSections = sheets.map(sheetName => {
+              const worksheet = workbook.Sheets[sheetName];
+              const aoa = XLSX.utils.sheet_to_json(worksheet, {
+                header: 1,
+                defval: ''
+              });
+
+              const sourceRowMap = {};
+              let mapIdx = 0;
+              aoa.forEach((row, origIdx) => {
+                if (row.filter(Boolean).length > 0) {
+                  sourceRowMap[mapIdx] = origIdx + 1;
+                  mapIdx++;
+                }
+              });
+
+              const filtered = aoa.filter(row => row.filter(Boolean).length > 0);
+
+              return {
+                name: sheetName,
+                data: filtered,
+                rowCount: filtered.length,
+                workbook: workbook
+              };
+            });
+          }
+        } else if (fileType === 'pdf') {
+          result.warnings.push('PDF parsing not yet implemented - awaiting PDF library');
+          result.success = false;
+          result.error = 'PDF support pending';
+        } else {
+          result.success = false;
+          result.error = 'Unsupported file format: ' + fileType;
+        }
+
+        resolve(result);
+      } catch (err) {
+        resolve({
+          success: false,
+          error: err.message,
+          fileType,
+          fileName: file.name
+        });
+      }
+    };
+
+    if (fileType === 'xlsx' || fileType === 'xls' || fileType === 'ods') {
       reader.readAsArrayBuffer(file);
     } else {
       reader.readAsText(file);
     }
   });
-
-  let result;
-  if (fileType === 'csv') {
-    result = await parseCsvManifest(file, fileData);
-  } else if (fileType === 'tsv') {
-    result = await parseTsvManifest(file, fileData);
-  } else if (fileType === 'txt') {
-    result = await parseTxtManifest(file, fileData);
-  } else if (['xlsx', 'xls', 'ods'].includes(fileType)) {
-    result = await parseSpreadsheetManifest(file, fileType, fileData);
-  }
-
-  if (!result.ok) {
-    return result;
-  }
-
-  // Build canonical structure
-  return {
-    version: 1,
-    fileName: file.name,
-    detectedType: fileType,
-    importedAt: new Date().toISOString(),
-    sourceSections: result.sourceSections,
-    warnings: result.warnings || []
-  };
 }
 
-// Global state for manifest import
+// Display import review screen
+function showManifestImportReview(importResult) {
+  if (!importResult.success) {
+    alert('❌ ' + importResult.error);
+    return;
+  }
+
+  // If single sheet, proceed directly to header detection
+  if (importResult.sourceSections.length === 1) {
+    proceedToHeaderDetectionFromImport(importResult, importResult.sourceSections[0]);
+  } else {
+    // Show sheet selection screen
+    showManifestSheetSelection(importResult);
+  }
+}
+
+// Sheet selection UI for multi-sheet workbooks
+function showManifestSheetSelection(importResult) {
+  const container = document.getElementById('scr-manifest-sheet-select');
+  if (!container) return;
+
+  const sheetsDiv = document.getElementById('sheetButtonsContainer');
+  sheetsDiv.innerHTML = importResult.sourceSections.map(section =>
+    `<button onclick="proceedToHeaderDetectionFromImport_v3('${section.name}')" style="background: #667eea; text-align: left; padding: 15px;">📄 ${escapeHtml(section.name)}</button>`
+  ).join('');
+
+  container.style.display = 'block';
+}
+
+// Proceed to header detection with selected sheet
+window.proceedToHeaderDetectionFromImport_v3 = function(sheetName) {
+  // This will be set by showManifestImportReview
+  if (window.currentImportResult && window.currentImportResult.sourceSections) {
+    const section = window.currentImportResult.sourceSections.find(s => s.name === sheetName);
+    if (section) {
+      document.getElementById('scr-manifest-sheet-select').style.display = 'none';
+      proceedToHeaderDetectionFromImport(window.currentImportResult, section);
+    }
+  }
+};
+
+function proceedToHeaderDetectionFromImport(importResult, section) {
+  currentRawRows = section.data;
+  currentSheetName = section.name;
+
+  const detection = detectHeaderRow(currentRawRows);
+  renderHeaderDetectionPreview(detection.rowIndex);
+}
+
+// Session v3 storage functions
+function saveManifestSessionToStorageV3(manifestSession) {
+  try {
+    localStorage.setItem(MANIFEST_SESSION_V3_KEY, JSON.stringify(manifestSession));
+  } catch (e) {
+    console.warn('Failed to save to localStorage v3:', e);
+  }
+}
+
+function loadManifestSessionFromStorageV3() {
+  try {
+    const stored = localStorage.getItem(MANIFEST_SESSION_V3_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch (e) {
+    console.warn('Failed to load from localStorage v3:', e);
+    return null;
+  }
+}
+
 let currentRawRows = [];
 let currentWorkbook = null;
 let currentSheetName = null;
-let detectedHeaderRowIndex = 0;
 
-// Normalize header name for matching
-function normalizeHeaderName(name) {
-  return String(name || '')
-    .toUpperCase()
-    .trim()
-    .replace(/[^\w\s]/g, '');
-}
-
-// Score a row as potential header based on semantic field matches
-function scoreRowAsHeader(row) {
-  let score = 0;
-  const normalizedRow = row.map(normalizeHeaderName);
-
-  for (const [field, aliases] of Object.entries(SEMANTIC_FIELD_ALIASES)) {
-    for (const alias of aliases) {
-      const normalized = normalizeHeaderName(alias);
-      if (normalizedRow.some(h => h === normalized)) {
-        score += 10;
-        break;
-      }
-    }
-  }
-
-  const hasIdentifier = normalizedRow.some(h =>
-    ['UPC', 'UPCNUMBER', 'SKU', 'ITEMNUMBER', 'ITEM', 'TITLE', 'DESCRIPTION'].some(id => h.includes(id))
-  );
-  const hasQuantity = normalizedRow.some(h => h.includes('QUANTITY') || h.includes('QTY'));
-
-  if (hasIdentifier && hasQuantity) score += 20;
-
-  return score;
-}
-
-// Detect header row from raw matrix (scans first 50 rows)
-function detectHeaderRow(rawRows) {
-  let bestRow = 0;
-  let bestScore = 0;
-
-  for (let i = 0; i < Math.min(50, rawRows.length); i++) {
-    const row = rawRows[i];
-    if (!row || row.filter(Boolean).length === 0) continue;
-
-    const score = scoreRowAsHeader(row);
-    if (score > bestScore) {
-      bestScore = score;
-      bestRow = i;
-    }
-  }
-
-  return { rowIndex: bestRow, score: bestScore };
-}
-
-// Handle CSV file: use Papa Parse for raw array, then detect header
-function handleCsvFile(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const csv = e.target.result;
-      const result = Papa.parse(csv, {
-        header: false,
-        skipEmptyLines: false,
-        dynamicTyping: false
-      });
-
-      currentRawRows = result.data;
-      proceedWithHeaderDetection();
-    } catch (error) {
-      $('manifest-upload-msg').textContent = '❌ Error parsing CSV: ' + error.message;
-      $('manifest-upload-msg').style.color = 'var(--dw)';
-    }
-  };
-  reader.readAsText(file);
-}
-
-// Handle XLSX file: read workbook, show sheet selector if multiple sheets
-function handleXlsxFile(file) {
-  const msgEl = $('manifest-upload-msg');
-  if (typeof XLSX === 'undefined') {
-    msgEl.textContent = '❌ Excel library failed to load. Please refresh and try again.';
-    msgEl.style.color = 'var(--dw)';
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      currentWorkbook = XLSX.read(e.target.result, { type: 'array' });
-      const sheetNames = currentWorkbook.SheetNames.filter(name => {
-        const sheet = currentWorkbook.Sheets[name];
-        return sheet && Object.keys(sheet).length > 1;
-      });
-
-      if (sheetNames.length === 0) {
-        $('manifest-upload-msg').textContent = '❌ No sheets with data found';
-        $('manifest-upload-msg').style.color = 'var(--dw)';
-      } else if (sheetNames.length === 1) {
-        currentSheetName = sheetNames[0];
-        selectSheet(sheetNames[0]);
-      } else {
-        renderSheetSelection(sheetNames);
-        showScreen('scr-manifest-sheet');
-      }
-    } catch (error) {
-      $('manifest-upload-msg').textContent = '❌ Error reading XLSX: ' + error.message;
-      $('manifest-upload-msg').style.color = 'var(--dw)';
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-// Select a sheet from multi-sheet workbook
-function selectSheet(sheetName) {
-  try {
-    currentSheetName = sheetName;
-    const worksheet = currentWorkbook.Sheets[sheetName];
-    const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
-    currentRawRows = aoa;
-    proceedWithHeaderDetection();
-  } catch (error) {
-    $('manifest-upload-msg').textContent = '❌ Error selecting sheet: ' + error.message;
-    $('manifest-upload-msg').style.color = 'var(--dw)';
+// Manual header row navigation
+function previousDetectedHeaderRow() {
+  if (detectedHeaderRowIndex > 0) {
+    detectedHeaderRowIndex--;
+    renderHeaderDetectionPreview(detectedHeaderRowIndex);
   }
 }
 
-// Render sheet selection buttons
-function renderSheetSelection(sheetNames) {
-  const container = $('manifest-sheets-container');
-  if (!container) return;
-  container.innerHTML = sheetNames.map(name =>
-    `<button class="btn" onclick="selectSheet('${escapeHtml(name)}')" ontouchend="event.preventDefault();selectSheet('${escapeHtml(name)}')">📄 ${escapeHtml(name)}</button>`
-  ).join('');
-}
-
-// Proceed with header detection after file is loaded
-function proceedWithHeaderDetection() {
-  const detection = detectHeaderRow(currentRawRows);
-  detectedHeaderRowIndex = detection.rowIndex;
-  renderHeaderDetectionPreview(detectedHeaderRowIndex);
-  showScreen('scr-manifest-header');
+function nextDetectedHeaderRow() {
+  if (detectedHeaderRowIndex < currentRawRows.length - 1) {
+    detectedHeaderRowIndex++;
+    renderHeaderDetectionPreview(detectedHeaderRowIndex);
+  }
 }
 
 // Render header detection preview with nearby rows
@@ -2564,21 +2352,6 @@ function renderHeaderDetectionPreview(headerRowIndex) {
   }
 
   container.innerHTML = html;
-}
-
-// Manual header row navigation
-function previousDetectedHeaderRow() {
-  if (detectedHeaderRowIndex > 0) {
-    detectedHeaderRowIndex--;
-    renderHeaderDetectionPreview(detectedHeaderRowIndex);
-  }
-}
-
-function nextDetectedHeaderRow() {
-  if (detectedHeaderRowIndex < currentRawRows.length - 1) {
-    detectedHeaderRowIndex++;
-    renderHeaderDetectionPreview(detectedHeaderRowIndex);
-  }
 }
 
 // Confirm detected header and proceed to column mapping
@@ -2696,6 +2469,7 @@ function submitManifestMapping() {
   normalizeManifestRowsV2();
   manifestSession.status = 'ready';
   saveManifestSessionToStorage();
+  saveManifestSessionToStorageV3(manifestSession);
   renderManifestSessionIndicator();
   renderManifestSummary();
   showScreen('scr-manifest-summary');
@@ -2766,36 +2540,16 @@ async function handleManifestFileSelected(e) {
 
   try {
     const result = await importManifestFile(file);
-
-    if (!result.ok) {
-      if (result.errorCode === 'pending_parser') {
-        msgEl.textContent = `⚠️ ${result.message}`;
-        msgEl.style.color = 'var(--gd)';
-        return;
-      }
-      if (result.errorCode === 'dependency_missing') {
-        msgEl.textContent = result.message;
-        msgEl.style.color = 'var(--dw)';
-        return;
-      }
-      msgEl.textContent = `❌ ${result.message || 'Import failed'}`;
-      msgEl.style.color = 'var(--dw)';
-      return;
-    }
-
-    // Extract rawRows from first section for header detection
-    const section = result.sourceSections[0];
-    currentRawRows = section.rawRows;
-    currentFile = file.name;
-    currentSheetName = result.sourceSections.length > 1 ? section.name : null;
-
-    // Proceed with header detection
     msgEl.textContent = '';
-    msgEl.style.color = 'var(--mu)';
-    proceedWithHeaderDetection();
+    msgEl.style.display = 'none';
+
+    currentFile = file.name;
+    window.currentImportResult = result;
+    showManifestImportReview(result);
   } catch (error) {
     msgEl.textContent = `❌ Error: ${error.message}`;
     msgEl.style.color = 'var(--dw)';
+    msgEl.style.display = 'block';
   }
 }
 
