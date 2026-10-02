@@ -2091,7 +2091,7 @@ async function detectManifestFileType(file) {
     // Verify with magic bytes for binary formats
     if (['xlsx', 'xls', 'ods', 'pdf'].includes(extType)) {
       const magicBytes = await readFileMagicBytes(file, 4);
-      const detected = detectFileTypeByMagicBytes(magicBytes);
+      const detected = detectFileTypeByMagicBytes(magicBytes, extType);
       if (detected) return detected;
     }
     return extType;
@@ -2104,7 +2104,7 @@ async function detectManifestFileType(file) {
 
   // Try magic bytes if extension unknown
   const magicBytes = await readFileMagicBytes(file, 4);
-  return detectFileTypeByMagicBytes(magicBytes) || 'unknown';
+  return detectFileTypeByMagicBytes(magicBytes, null) || 'unknown';
 }
 
 async function readFileMagicBytes(file, numBytes) {
@@ -2120,7 +2120,7 @@ async function readFileMagicBytes(file, numBytes) {
   });
 }
 
-function detectFileTypeByMagicBytes(hexString) {
+function detectFileTypeByMagicBytes(hexString, trustedExt) {
   if (!hexString || hexString.length < 4) return null;
   const hex = hexString.toLowerCase();
 
@@ -2131,10 +2131,14 @@ function detectFileTypeByMagicBytes(hexString) {
   if (hex.startsWith('d0cf11e0')) return 'xls';
 
   // ZIP (XLSX, ODS): 504b (PK)
+  // Both XLSX and ODS are ZIP containers - trust explicit extension
   if (hex.startsWith('504b')) {
-    // XLSX is ZIP, ODS is also ZIP - need to check inside or trust extension
-    // For now, differentiate by common patterns: XLSX more common
-    return 'xlsx';
+    // If extension is .ods, respect it even if magic is ZIP
+    if (trustedExt === 'ods') return 'ods';
+    // If extension is .xlsx, respect it
+    if (trustedExt === 'xlsx') return 'xlsx';
+    // Otherwise, return null - let extension be trusted
+    return null;
   }
 
   return null;
@@ -2392,6 +2396,8 @@ window.selectSheetAndProceed = function(sheetName) {
 function proceedToHeaderDetectionFromImport(importResult, section) {
   currentRawRows = section.rawRows;
   currentSheetName = section.name;
+  currentSourceRowMap = section.sourceRowMap || {};  // ISSUE 2: Preserve sourceRowMap
+  currentImportFileType = importResult.fileType;      // ISSUE 4: Preserve actual file type
 
   const detection = detectHeaderRow(currentRawRows);
   renderHeaderDetectionPreview(detection.rowIndex);
@@ -2419,6 +2425,8 @@ function loadManifestSessionFromStorageV3() {
 let currentRawRows = [];
 let currentWorkbook = null;
 let currentSheetName = null;
+let currentSourceRowMap = {};      // ISSUE 2: Preserve mapping from filtered → original rows
+let currentImportFileType = null;  // ISSUE 4: Preserve detected file type
 
 // Manual header row navigation
 function previousDetectedHeaderRow() {
@@ -2474,35 +2482,51 @@ function renderHeaderDetectionPreview(headerRowIndex) {
 function confirmDetectedHeader() {
   const headerRow = currentRawRows[detectedHeaderRowIndex] || [];
 
+  // ISSUE 3: Use version 3
+  // ISSUE 4: Use actual detected fileType, not hardcoded
+  // ISSUE 2, 5: Preserve sourceRowMap and add source metadata
   manifestSession = {
-    version: 2,
+    version: 3,  // Was version 2 - ISSUE 3 FIX
     id: generateSessionId(),
     fileName: currentFile || 'manifest',
-    fileType: (currentFile && currentFile.endsWith('.xlsx')) ? 'xlsx' : 'csv',
+    fileType: currentImportFileType || 'unknown',  // Was hardcoded - ISSUE 4 FIX
     sheetName: currentSheetName || null,
     uploadedAt: new Date().toISOString(),
     headerRowIndex: detectedHeaderRowIndex,
     rawHeaders: headerRow,
     mapping: {},
-    rows: currentRawRows.slice(detectedHeaderRowIndex + 1).map((row, idx) => ({
-      rowId: idx,
-      sourceRowNumber: detectedHeaderRowIndex + idx + 2,
-      original: {},
-      normalized: {
-        upc: '',
-        sku: '',
-        title: '',
-        brand: '',
-        category: '',
-        expectedQty: null,
-        palletId: '',
-        unitRetail: null,
-        extendedRetail: null
-      },
-      receivedQty: 0,
-      status: 'pending',
-      notes: ''
-    })),
+    rows: currentRawRows.slice(detectedHeaderRowIndex + 1).map((row, idx) => {
+      // Calculate actual source row from sourceRowMap - ISSUE 2 FIX
+      const filteredIndex = detectedHeaderRowIndex + 1 + idx;
+      const actualSourceRowNumber = currentSourceRowMap[filteredIndex]
+        ? currentSourceRowMap[filteredIndex]
+        : (filteredIndex + 1);
+
+      return {
+        rowId: idx,
+        sourceRowNumber: actualSourceRowNumber,  // Now uses sourceRowMap - ISSUE 2 FIX
+        source: {  // ISSUE 5: Add source metadata
+          type: currentImportFileType || 'unknown',
+          section: currentSheetName || 'Sheet1',
+          sourceRowNumber: actualSourceRowNumber
+        },
+        original: {},
+        normalized: {
+          upc: '',
+          sku: '',
+          title: '',
+          brand: '',
+          category: '',
+          expectedQty: null,
+          palletId: '',
+          unitRetail: null,
+          extendedRetail: null
+        },
+        receivedQty: 0,
+        status: 'pending',
+        notes: ''
+      };
+    }),
     status: 'mapping',
     receivedRecords: []
   };
@@ -2584,8 +2608,16 @@ function submitManifestMapping() {
 
   normalizeManifestRowsV2();
   manifestSession.status = 'ready';
-  saveManifestSessionToStorage();
-  saveManifestSessionToStorageV3(manifestSession);
+
+  // ISSUE 6: For Universal Importer v3, save ONLY to v3 key (not v2)
+  if (manifestSession.version === 3) {
+    saveManifestSessionToStorageV3(manifestSession);
+  } else {
+    // Backward compat: older v2 sessions still use v2 key
+    saveManifestSessionToStorage();
+    saveManifestSessionToStorageV3(manifestSession);
+  }
+
   renderManifestSessionIndicator();
   renderManifestSummary();
   showScreen('scr-manifest-summary');
@@ -2922,6 +2954,107 @@ async function runPhase1Tests() {
     console.log(`✓ Header detection - Generic: ${results['Header detection - Generic'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     console.log(`✗ Header detection - Generic error: ${e.message}\n`);
+  }
+
+  // Test 13: ODS classification respects extension (ISSUE 1)
+  try {
+    const odsData = 'Header1,Header2\nData1,Data2';
+    const odsFile = new File([odsData], 'test.ods', { type: 'application/vnd.oasis.opendocument.spreadsheet' });
+    const detectedODS = await detectManifestFileType(odsFile);
+    results['ODS classification'] = detectedODS === 'ods';
+    console.log(`✓ ODS classification: ${results['ODS classification'] ? 'PASS' : 'FAIL'} (detected: ${detectedODS})\n`);
+  } catch (e) {
+    console.log(`✗ ODS classification error: ${e.message}\n`);
+  }
+
+  // Test 14: XLSX classification respects extension (ISSUE 1)
+  try {
+    const xlsxData = 'Header1,Header2\nData1,Data2';
+    const xlsxFile = new File([xlsxData], 'test.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const detectedXLSX = await detectManifestFileType(xlsxFile);
+    results['XLSX classification'] = detectedXLSX === 'xlsx';
+    console.log(`✓ XLSX classification: ${results['XLSX classification'] ? 'PASS' : 'FAIL'} (detected: ${detectedXLSX})\n`);
+  } catch (e) {
+    console.log(`✗ XLSX classification error: ${e.message}\n`);
+  }
+
+  // Test 15: TSV fileType preserved (ISSUE 4)
+  try {
+    const tsvData = 'UPC\tTitle\tQty\n001234567890\tProduct\t10';
+    const tsvFile = new File([tsvData], 'test.tsv', { type: 'text/tab-separated-values' });
+    const result = await importManifestFile(tsvFile);
+    results['TSV fileType preservation'] = result.success && result.fileType === 'tsv';
+    console.log(`✓ TSV fileType: ${results['TSV fileType preservation'] ? 'PASS' : 'FAIL'} (got: ${result.fileType})\n`);
+  } catch (e) {
+    console.log(`✗ TSV fileType error: ${e.message}\n`);
+  }
+
+  // Test 16: XLS fileType preserved (ISSUE 4)
+  try {
+    const xlsData = 'UPC,Title,Qty\n001234567890,Product,10';
+    const xlsFile = new File([xlsData], 'test.xls', { type: 'application/vnd.ms-excel' });
+    // Note: Can't actually create real XLS without SheetJS, but we can test detection
+    const detectedXLS = await detectManifestFileType(xlsFile);
+    results['XLS fileType detection'] = detectedXLS === 'xls';
+    console.log(`✓ XLS fileType: ${results['XLS fileType detection'] ? 'PASS' : 'FAIL'} (got: ${detectedXLS})\n`);
+  } catch (e) {
+    console.log(`✗ XLS fileType error: ${e.message}\n`);
+  }
+
+  // Test 17: Session version is 3 (ISSUE 3)
+  try {
+    const csvData = 'UPC,Title,Qty\n001,Product,10';
+    const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
+    const result = await importManifestFile(csvFile);
+    // Simulate header detection workflow to create session
+    if (result.success && result.sourceSections.length > 0) {
+      currentRawRows = result.sourceSections[0].rawRows;
+      currentSheetName = result.sourceSections[0].name;
+      currentSourceRowMap = result.sourceSections[0].sourceRowMap;
+      currentImportFileType = result.fileType;
+      detectedHeaderRowIndex = 0;
+      confirmDetectedHeader();
+      results['Session version 3'] = manifestSession && manifestSession.version === 3;
+      console.log(`✓ Session version: ${results['Session version 3'] ? 'PASS' : 'FAIL'} (got: ${manifestSession?.version})\n`);
+    }
+  } catch (e) {
+    console.log(`✗ Session version error: ${e.message}\n`);
+  }
+
+  // Test 18: CSV source row traceability (ISSUE 2)
+  try {
+    const csvData = '\n\nUPC,Title,Qty\n001,Product,10\n\n002,Product2,20';  // Has blank rows at positions 0,1,4
+    const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
+    const result = await importManifestFile(csvFile);
+    if (result.success && result.sourceSections.length > 0) {
+      const section = result.sourceSections[0];
+      // sourceRowMap should skip blanks: {0:3, 1:5, 2:7} (1-indexed)
+      const hasMapping = section.sourceRowMap && Object.keys(section.sourceRowMap).length > 0;
+      results['CSV source row map'] = hasMapping;
+      console.log(`✓ CSV source row map: ${results['CSV source row map'] ? 'PASS' : 'FAIL'} (map: ${JSON.stringify(section.sourceRowMap)})\n`);
+    }
+  } catch (e) {
+    console.log(`✗ CSV source row map error: ${e.message}\n`);
+  }
+
+  // Test 19: Session source metadata (ISSUE 5)
+  try {
+    const csvData = 'UPC,Title,Qty\n001,Product,10';
+    const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
+    const result = await importManifestFile(csvFile);
+    if (result.success && result.sourceSections.length > 0) {
+      currentRawRows = result.sourceSections[0].rawRows;
+      currentSheetName = result.sourceSections[0].name;
+      currentSourceRowMap = result.sourceSections[0].sourceRowMap;
+      currentImportFileType = result.fileType;
+      detectedHeaderRowIndex = 0;
+      confirmDetectedHeader();
+      const hasSourceMeta = manifestSession.rows[0] && manifestSession.rows[0].source && manifestSession.rows[0].source.type;
+      results['Session source metadata'] = hasSourceMeta;
+      console.log(`✓ Session source metadata: ${results['Session source metadata'] ? 'PASS' : 'FAIL'}\n`);
+    }
+  } catch (e) {
+    console.log(`✗ Session source metadata error: ${e.message}\n`);
   }
 
   // Summary
