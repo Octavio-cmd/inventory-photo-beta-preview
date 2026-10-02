@@ -2179,7 +2179,7 @@ function selectSheet(sheetName) {
   try {
     currentSheetName = sheetName;
     const worksheet = currentWorkbook.Sheets[sheetName];
-    const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    const aoa = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
     currentRawRows = aoa;
     proceedWithHeaderDetection();
   } catch (error) {
@@ -2703,7 +2703,7 @@ const SEMANTIC_FIELD_ALIASES = {
   <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
   <div style="margin-bottom:20px">
     <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Upload Manifest</h2>
-    <p style="font-size:13px;color:var(--mu)">Choose a CSV file to begin receiving</p>
+    <p style="font-size:13px;color:var(--mu)">Choose a CSV or Excel file to begin receiving</p>
   </div>
 
   <div class="manifest-upload-zone" onclick="document.getElementById('manifest-file-input').click()" ontouchend="event.preventDefault();document.getElementById('manifest-file-input').click()">
