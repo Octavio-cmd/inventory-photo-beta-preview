@@ -2341,12 +2341,30 @@ function displayManifestImportReviewScreen(importResult) {
   const reviewContainer = document.getElementById('manifest-import-review-details');
   if (!reviewContainer) return;
 
-  const section = importResult.sourceSections[0] || {};
+  // FIX 3: Use selected section if specified, otherwise use first section
+  const sectionIndex = importResult.selectedSectionIndex !== undefined ? importResult.selectedSectionIndex : 0;
+  const section = importResult.sourceSections[sectionIndex] || {};
   const warningsHtml = importResult.warnings.length > 0
     ? `<div style="background:var(--sf2);border-radius:10px;padding:12px;margin-bottom:12px;font-size:12px;color:var(--gd)">
          <strong>⚠️ Warnings:</strong><br/>${importResult.warnings.map(w => escapeHtml(w)).join('<br/>')}
        </div>`
     : '';
+
+  // FIX 2: Generate data preview (first 3-5 rows)
+  const previewCount = Math.min(5, (section.rawRows || []).length);
+  let previewHtml = '';
+  if (previewCount > 0) {
+    previewHtml = '<div style="background:var(--sf2);border-radius:10px;padding:12px;margin-bottom:12px;margin-top:16px">';
+    previewHtml += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;font-weight:700">📋 Data Preview:</div>';
+    for (let i = 0; i < previewCount; i++) {
+      const row = section.rawRows[i] || [];
+      const cellsHtml = row.slice(0, 5).map(cell =>
+        `<span style="background:var(--bd);padding:4px 8px;border-radius:4px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;max-width:120px">${escapeHtml(String(cell || ''))}</span>`
+      ).join(' ');
+      previewHtml += `<div style="margin-bottom:6px;font-size:11px">Row ${i + 1}: ${cellsHtml}</div>`;
+    }
+    previewHtml += '</div>';
+  }
 
   reviewContainer.innerHTML = `
     <div style="background:var(--sf);border-radius:12px;padding:16px;margin-bottom:16px">
@@ -2354,6 +2372,17 @@ function displayManifestImportReviewScreen(importResult) {
         <div>
           <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">File</div>
           <div style="font-size:14px;font-weight:700">${escapeHtml(importResult.fileName)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Format</div>
+          <div style="font-size:14px;font-weight:700;text-transform:uppercase">${importResult.fileType}</div>
+        </div>
+      </div>
+      <!-- FIX 1: Always show selected sheet name -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Selected Sheet</div>
+          <div style="font-size:14px;font-weight:700;color:var(--ac)">${escapeHtml(section.name || 'Unknown')}</div>
         </div>
         <div>
           <div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Format</div>
@@ -2371,6 +2400,7 @@ function displayManifestImportReviewScreen(importResult) {
         </div>
       </div>
     </div>
+    ${previewHtml}
     ${warningsHtml}
   `;
 
@@ -2385,6 +2415,10 @@ window.proceedFromImportReview = function() {
   if (window.currentImportResult.sourceSections.length === 1) {
     // Single sheet: go directly to header detection
     proceedToHeaderDetectionFromImport(window.currentImportResult, window.currentImportResult.sourceSections[0]);
+  } else if (window.currentImportResult.selectedSectionIndex !== undefined) {
+    // FIX 3: Sheet already selected, proceed to header detection
+    const selectedIndex = window.currentImportResult.selectedSectionIndex;
+    proceedToHeaderDetectionFromImport(window.currentImportResult, window.currentImportResult.sourceSections[selectedIndex]);
   } else {
     // Multiple sheets: show sheet selection
     showManifestSheetSelection(window.currentImportResult);
@@ -2411,7 +2445,10 @@ window.selectSheetAndProceed = function(sheetName) {
   if (window.currentImportResult && window.currentImportResult.sourceSections) {
     const section = window.currentImportResult.sourceSections.find(s => s.name === sheetName);
     if (section) {
-      proceedToHeaderDetectionFromImport(window.currentImportResult, section);
+      // FIX 3: Store selected section index so review screen shows the right sheet
+      window.currentImportResult.selectedSectionIndex = window.currentImportResult.sourceSections.indexOf(section);
+      // FIX 1: Display review screen with selected sheet before proceeding
+      displayManifestImportReviewScreen(window.currentImportResult);
     }
   }
 };
