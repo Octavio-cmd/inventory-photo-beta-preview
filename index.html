@@ -8,6 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="Inventory">
   <title>Inventory Manager</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.4.1/papaparse.min.js"></script>
   <style>
     :root {
       --bg:#0d0d0d;--sf:#1a1a1a;--sf2:#242424;--bd:#333;
@@ -179,6 +180,42 @@
     .exit-btn.cancel{background:var(--sf2);color:var(--mu);border:1px solid var(--bd)}
     .exit-msg{font-size:12px;color:var(--mu);text-align:center;min-height:16px}
 
+    /* MANIFEST RECEIVING — BETA */
+    .manifest-card{background:var(--sf);border:2px solid var(--gd);border-radius:16px;padding:24px;text-align:center;margin-bottom:16px;cursor:pointer}
+    .manifest-card .icon{font-size:48px;margin-bottom:12px}
+    .manifest-card h2{font-size:20px;font-weight:800;margin-bottom:6px}
+    .manifest-card p{font-size:13px;color:var(--mu)}
+
+    .manifest-status-banner{background:var(--sf2);border-radius:12px;padding:14px;margin-bottom:16px;border-left:4px solid var(--gd)}
+    .manifest-status-title{font-size:13px;font-weight:700;color:var(--gd)}
+    .manifest-status-info{font-size:12px;color:var(--mu);margin-top:6px}
+
+    .manifest-upload-zone{background:var(--sf2);border:2px dashed var(--bd);border-radius:12px;padding:24px;text-align:center;cursor:pointer;transition:all .2s}
+    .manifest-upload-zone:hover{border-color:var(--gd);background:rgba(255,171,0,.05)}
+    .manifest-upload-zone p{font-size:13px;color:var(--mu);margin-top:8px}
+
+    .manifest-mapping-row{background:var(--sf2);border-radius:12px;padding:14px;margin-bottom:12px;display:flex;align-items:center;gap:12px}
+    .manifest-mapping-label{flex:1;font-size:13px;font-weight:700}
+    .manifest-mapping-select{flex:1;background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:10px;color:var(--tx);font-size:13px}
+
+    .manifest-preview-table{width:100%;border-collapse:collapse;font-size:12px}
+    .manifest-preview-table th{background:var(--sf2);padding:10px;text-align:left;font-weight:700;color:var(--mu);border-bottom:1px solid var(--bd)}
+    .manifest-preview-table td{padding:10px;border-bottom:1px solid var(--bd)}
+    .manifest-preview-table tr:last-child td{border-bottom:none}
+    .manifest-preview-table td.dim{color:var(--mu);font-size:11px}
+
+    .manifest-warning{background:rgba(255,171,0,.12);border-left:4px solid var(--gd);border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:var(--gd)}
+
+    .manifest-session-indicator{background:var(--sf);border-radius:12px;padding:16px;margin-bottom:16px;border-left:4px solid var(--sv)}
+    .manifest-session-label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:4px}
+    .manifest-session-file{font-size:14px;font-weight:700;margin-bottom:4px}
+    .manifest-session-count{font-size:12px;color:var(--mu);}
+    .manifest-session-btn{margin-top:10px;display:flex;gap:8px}
+    .manifest-session-btn button{flex:1;padding:10px;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px}
+    .manifest-session-btn .resume{background:var(--sv);color:#000}
+    .manifest-session-btn .replace{background:var(--sf2);color:var(--mu);border:1px solid var(--bd)}
+    .manifest-session-btn .clear{background:rgba(255,23,68,.2);color:var(--dw)}
+
   </style>
 </head>
 <body>
@@ -246,6 +283,14 @@
     <h2>Identify by Photo<span class="beta-tag">BETA</span></h2>
     <p>Take or upload a photo to find a possible match</p>
   </div>
+
+  <div class="manifest-card" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">
+    <div class="icon">📋</div>
+    <h2>Manifest Receiving<span class="beta-tag">BETA</span></h2>
+    <p>Upload a manifest and reconcile received inventory</p>
+  </div>
+
+  <div id="manifest-session-indicator"></div>
 
   <div style="font-size:12px;color:var(--mu);text-align:center;margin:12px 0">— or type manually —</div>
 
@@ -1912,6 +1957,342 @@ function enterUpcManually(){
   if(input) setTimeout(() => input.focus(), 50);
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// MANIFEST RECEIVING — Phase 1
+// ═════════════════════════════════════════════════════════════════════════
+
+const MANIFEST_STORAGE_KEY = 'inventory_manifest_beta_session_v1';
+
+let manifestSession = null;
+
+function generateSessionId(){
+  return 'ms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function loadManifestSessionFromStorage(){
+  try {
+    const stored = localStorage.getItem(MANIFEST_STORAGE_KEY);
+    if(stored){
+      manifestSession = JSON.parse(stored);
+      return true;
+    }
+  } catch(e){
+    console.error('Error loading manifest session:', e);
+  }
+  return false;
+}
+
+function saveManifestSessionToStorage(){
+  if(!manifestSession) return;
+  try {
+    localStorage.setItem(MANIFEST_STORAGE_KEY, JSON.stringify(manifestSession));
+  } catch(e){
+    console.error('Error saving manifest session:', e);
+    toast('⚠️ Could not save manifest session');
+  }
+}
+
+function clearManifestSessionFromStorage(){
+  try {
+    localStorage.removeItem(MANIFEST_STORAGE_KEY);
+    manifestSession = null;
+  } catch(e){
+    console.error('Error clearing manifest session:', e);
+  }
+}
+
+function renderManifestSessionIndicator(){
+  const el = $('manifest-session-indicator');
+  if(!el) return;
+
+  if(manifestSession && (manifestSession.status === 'ready' || manifestSession.status === 'mapping')){
+    el.innerHTML = `
+      <div class="manifest-session-indicator">
+        <div class="manifest-session-label">📋 Active Manifest</div>
+        <div class="manifest-session-file">${escapeHtml(manifestSession.fileName)}</div>
+        <div class="manifest-session-count">${manifestSession.rows.length} rows</div>
+        <div class="manifest-session-btn">
+          <button class="resume" onclick="openManifestSummary()" ontouchend="event.preventDefault();openManifestSummary()">Resume</button>
+          <button class="replace" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()">Replace</button>
+          <button class="clear" onclick="confirmClearManifest()" ontouchend="event.preventDefault();confirmClearManifest()">Clear</button>
+        </div>
+      </div>
+    `;
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function openManifestReceiving(){
+  if(manifestSession && (manifestSession.status === 'ready' || manifestSession.status === 'mapping')){
+    openManifestSummary();
+  } else {
+    showScreen('scr-manifest-upload');
+  }
+}
+
+function openManifestSummary(){
+  if(!manifestSession || !manifestSession.rows.length){
+    toast('⚠️ No active manifest');
+    return;
+  }
+  renderManifestSummary();
+  showScreen('scr-manifest-summary');
+}
+
+// CSV file input handler
+document.addEventListener('DOMContentLoaded', function(){
+  const fileInput = $('manifest-file-input');
+  if(fileInput){
+    fileInput.addEventListener('change', handleManifestFileSelected);
+  }
+  loadManifestSessionFromStorage();
+  renderManifestSessionIndicator();
+  updateAuthUI();
+});
+
+async function handleManifestFileSelected(e){
+  const file = e.target.files[0];
+  if(!file) return;
+
+  const msgEl = $('manifest-upload-msg');
+  msgEl.textContent = 'Parsing CSV...';
+  msgEl.style.color = 'var(--mu)';
+
+  try {
+    const text = await file.text();
+    const result = Papa.parse(text, {
+      header: true,
+      skipEmptyLines: true,
+      dynamicTyping: false,
+      trimHeaders: true,
+      transformHeader: (h) => h.trim()
+    });
+
+    if(!result.data || !result.data.length){
+      msgEl.textContent = '⚠️ CSV has no data rows';
+      msgEl.style.color = 'var(--dw)';
+      return;
+    }
+
+    if(!result.meta || !result.meta.fields || !result.meta.fields.length){
+      msgEl.textContent = '⚠️ CSV has no headers';
+      msgEl.style.color = 'var(--dw)';
+      return;
+    }
+
+    manifestSession = {
+      version: 1,
+      id: generateSessionId(),
+      fileName: file.name,
+      uploadedAt: new Date().toISOString(),
+      headers: result.meta.fields,
+      mapping: {},
+      rows: result.data.map((row, idx) => ({
+        rowId: idx,
+        original: row,
+        normalized: {
+          upc: '',
+          sku: '',
+          title: '',
+          brand: '',
+          expectedQty: null
+        },
+        receivedQty: 0,
+        status: 'pending',
+        notes: ''
+      })),
+      status: 'mapping',
+      receivedRecords: []
+    };
+
+    msgEl.textContent = `✅ Loaded ${manifestSession.rows.length} rows`;
+    msgEl.style.color = 'var(--sv)';
+
+    setTimeout(() => renderColumnMapping(), 500);
+  } catch(err){
+    console.error('CSV parse error:', err);
+    msgEl.textContent = '❌ Error parsing CSV: ' + err.message;
+    msgEl.style.color = 'var(--dw)';
+  }
+}
+
+function renderColumnMapping(){
+  if(!manifestSession || !manifestSession.headers) return;
+
+  const container = $('manifest-mapping-container');
+  const mapFields = [
+    { key: 'upc', label: 'UPC / GTIN', suggestions: ['UPC', 'GTIN', 'EAN', 'Barcode', 'UPC Code'] },
+    { key: 'sku', label: 'SKU', suggestions: ['SKU', 'Item SKU', 'Seller SKU', 'Stock Number'] },
+    { key: 'title', label: 'Product Title', suggestions: ['Title', 'Product', 'Product Name', 'Description', 'Item Description'] },
+    { key: 'brand', label: 'Brand', suggestions: ['Brand', 'Manufacturer'] },
+    { key: 'expectedQty', label: 'Expected Quantity', suggestions: ['Qty', 'Quantity', 'QTY', 'Units', 'Expected Qty', 'Expected Quantity'] }
+  ];
+
+  let html = '';
+  mapFields.forEach(field => {
+    const suggested = field.suggestions.find(s => manifestSession.headers.some(h => h.toLowerCase() === s.toLowerCase()));
+    html += `
+      <div class="manifest-mapping-row">
+        <div class="manifest-mapping-label">${field.label}</div>
+        <select class="manifest-mapping-select" id="map-${field.key}" onchange="updateMapping('${field.key}', this.value)">
+          <option value="">— Not Present —</option>
+          ${manifestSession.headers.map(h => `
+            <option value="${escapeHtml(h)}" ${suggested === h ? 'selected' : ''}>${escapeHtml(h)}</option>
+          `).join('')}
+        </select>
+      </div>
+    `;
+  });
+
+  container.innerHTML = html;
+  showScreen('scr-manifest-map');
+}
+
+function updateMapping(key, headerName){
+  if(!manifestSession) return;
+  manifestSession.mapping[key] = headerName || '';
+}
+
+function submitManifestMapping(){
+  if(!manifestSession) return;
+
+  const msgEl = $('manifest-map-msg');
+
+  const hasUpc = manifestSession.mapping.upc;
+  const hasSku = manifestSession.mapping.sku;
+  const hasTitle = manifestSession.mapping.title;
+
+  if(!hasUpc && !hasSku && !hasTitle){
+    msgEl.textContent = '⚠️ Specify at least UPC, SKU, or Title';
+    return;
+  }
+
+  msgEl.textContent = '';
+
+  // Normalize all rows
+  normalizeManifestRows();
+
+  manifestSession.status = 'ready';
+  saveManifestSessionToStorage();
+  renderManifestSessionIndicator();
+  renderManifestSummary();
+  showScreen('scr-manifest-summary');
+}
+
+function normalizeManifestRows(){
+  if(!manifestSession) return;
+
+  manifestSession.rows.forEach(row => {
+    const map = manifestSession.mapping;
+
+    if(map.upc && row.original[map.upc]){
+      row.normalized.upc = String(row.original[map.upc]).trim();
+    }
+    if(map.sku && row.original[map.sku]){
+      row.normalized.sku = String(row.original[map.sku]).trim();
+    }
+    if(map.title && row.original[map.title]){
+      row.normalized.title = String(row.original[map.title]).trim();
+    }
+    if(map.brand && row.original[map.brand]){
+      row.normalized.brand = String(row.original[map.brand]).trim();
+    }
+
+    if(map.expectedQty && row.original[map.expectedQty]){
+      const qtyStr = String(row.original[map.expectedQty]).trim();
+      const qtyNum = parseInt(qtyStr, 10);
+      if(!isNaN(qtyNum) && qtyNum > 0){
+        row.normalized.expectedQty = qtyNum;
+      }
+    }
+  });
+}
+
+function renderManifestSummary(){
+  if(!manifestSession) return;
+
+  const content = $('manifest-summary-content');
+  const rowsWithUpc = manifestSession.rows.filter(r => r.normalized.upc).length;
+  const rowsWithSku = manifestSession.rows.filter(r => r.normalized.sku).length;
+  const rowsWithTitle = manifestSession.rows.filter(r => r.normalized.title).length;
+  const rowsWithQty = manifestSession.rows.filter(r => r.normalized.expectedQty).length;
+
+  let html = `
+    <div class="pd-section">
+      <div class="section-label">Manifest Details</div>
+      <div class="listing-row"><span class="key">File</span><span class="val">${escapeHtml(manifestSession.fileName)}</span></div>
+      <div class="listing-row"><span class="key">Total Rows</span><span class="val">${manifestSession.rows.length}</span></div>
+      <div class="listing-row"><span class="key">Rows with UPC</span><span class="val">${rowsWithUpc}</span></div>
+      <div class="listing-row"><span class="key">Rows with SKU</span><span class="val">${rowsWithSku}</span></div>
+      <div class="listing-row"><span class="key">Rows with Title</span><span class="val">${rowsWithTitle}</span></div>
+      <div class="listing-row"><span class="key">Rows with Qty</span><span class="val">${rowsWithQty}</span></div>
+    </div>
+  `;
+
+  // Preview first 10 rows
+  const previewCount = Math.min(10, manifestSession.rows.length);
+  html += `
+    <div class="pd-section">
+      <div class="section-label">Preview (${previewCount}/${manifestSession.rows.length} rows)</div>
+      <table class="manifest-preview-table">
+        <thead>
+          <tr>
+            ${manifestSession.mapping.upc ? '<th>UPC</th>' : ''}
+            ${manifestSession.mapping.sku ? '<th>SKU</th>' : ''}
+            ${manifestSession.mapping.title ? '<th>Title</th>' : ''}
+            ${manifestSession.mapping.expectedQty ? '<th>Qty</th>' : ''}
+          </tr>
+        </thead>
+        <tbody>
+          ${manifestSession.rows.slice(0, previewCount).map(row => `
+            <tr>
+              ${manifestSession.mapping.upc ? `<td class="dim">${escapeHtml(row.normalized.upc || '—')}</td>` : ''}
+              ${manifestSession.mapping.sku ? `<td class="dim">${escapeHtml(row.normalized.sku || '—')}</td>` : ''}
+              ${manifestSession.mapping.title ? `<td>${escapeHtml(row.normalized.title || '—')}</td>` : ''}
+              ${manifestSession.mapping.expectedQty ? `<td class="dim">${row.normalized.expectedQty || '—'}</td>` : ''}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  content.innerHTML = html;
+}
+
+function confirmReplaceManifest(){
+  if(!manifestSession) return;
+
+  if(confirm('Replace the current manifest? Any receiving progress will be lost.')){
+    clearManifestSessionFromStorage();
+    showScreen('scr-manifest-upload');
+    $('manifest-file-input').value = '';
+    renderManifestSessionIndicator();
+  }
+}
+
+function confirmClearManifest(){
+  if(!manifestSession) return;
+
+  if(confirm('Clear the manifest? This cannot be undone.')){
+    clearManifestSessionFromStorage();
+    renderManifestSessionIndicator();
+    showScreen('scr-home');
+  }
+}
+
+function confirmClearOrBack(){
+  if(!manifestSession){
+    showScreen('scr-home');
+    return;
+  }
+
+  if(confirm('Go back? Your manifest will remain available.')){
+    showScreen('scr-home');
+  }
+}
+
 </script>
 
 <!-- MULTI-LOCATION MODAL -->
@@ -2027,6 +2408,53 @@ function enterUpcManually(){
       <button class="exit-btn cancel" onclick="manualExitClose()" ontouchend="event.preventDefault();manualExitClose()" style="flex:1">❌ Cancel</button>
     </div>
   </div>
+</div>
+
+<!-- MANIFEST UPLOAD SCREEN -->
+<div class="scr" id="scr-manifest-upload">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Upload Manifest</h2>
+    <p style="font-size:13px;color:var(--mu)">Choose a CSV file to begin receiving</p>
+  </div>
+
+  <div class="manifest-upload-zone" onclick="document.getElementById('manifest-file-input').click()" ontouchend="event.preventDefault();document.getElementById('manifest-file-input').click()">
+    <div style="font-size:32px">📁</div>
+    <div style="font-size:15px;font-weight:700">Choose CSV File</div>
+    <p>CSV only — Excel/XLSX support coming soon</p>
+  </div>
+  <input type="file" id="manifest-file-input" accept=".csv" style="display:none">
+
+  <div id="manifest-upload-msg" style="font-size:13px;color:var(--mu);text-align:center;min-height:16px;margin-top:12px"></div>
+</div>
+
+<!-- MANIFEST COLUMN MAPPING SCREEN -->
+<div class="scr" id="scr-manifest-map">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-upload')" ontouchend="event.preventDefault();showScreen('scr-manifest-upload')">← Back</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Map Columns</h2>
+    <p style="font-size:13px;color:var(--mu)">Which columns contain your product data?</p>
+  </div>
+
+  <div id="manifest-mapping-container"></div>
+
+  <div id="manifest-map-msg" style="font-size:12px;color:var(--dw);text-align:center;min-height:16px;margin-bottom:12px"></div>
+
+  <button class="btn" onclick="submitManifestMapping()" ontouchend="event.preventDefault();submitManifestMapping()" style="margin-bottom:8px">✅ Continue to Summary</button>
+  <button class="btn sec" onclick="showScreen('scr-manifest-upload')" ontouchend="event.preventDefault();showScreen('scr-manifest-upload')">← Change File</button>
+</div>
+
+<!-- MANIFEST SUMMARY SCREEN -->
+<div class="scr" id="scr-manifest-summary">
+  <button class="btn sec" style="margin-bottom:12px" onclick="confirmClearOrBack()" ontouchend="event.preventDefault();confirmClearOrBack()">← Back</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Manifest Summary</h2>
+    <p style="font-size:13px;color:var(--mu)">Ready to begin receiving</p>
+  </div>
+
+  <div id="manifest-summary-content"></div>
+
+  <div id="manifest-ready-msg" style="font-size:13px;color:var(--mu);text-align:center;min-height:16px;margin-bottom:12px"></div>
 </div>
 
 </body>
