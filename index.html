@@ -2065,6 +2065,326 @@ const SEMANTIC_FIELD_ALIASES = {
   extendedRetail: ['EXTENDED RETAIL', 'TOTAL', 'TOTAL RETAIL', 'RETAIL TOTAL', 'EXTENDED PRICE']
 };
 
+// ===== PHASE 1: UNIVERSAL MANIFEST IMPORTER =====
+
+// STEP 1: DEPENDENCY HEALTH CHECK
+function checkManifestImportDependencies() {
+  const missing = [];
+  if (typeof Papa === 'undefined' || typeof Papa.parse !== 'function') {
+    missing.push('PapaParse');
+  }
+  if (typeof XLSX === 'undefined' || typeof XLSX.read !== 'function') {
+    missing.push('XLSX');
+  }
+  if (typeof XLSX.utils !== 'object' || typeof XLSX.utils.sheet_to_json !== 'function') {
+    missing.push('XLSX.utils');
+  }
+  return {
+    ok: missing.length === 0,
+    missing: missing,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// STEP 2: FILE TYPE DETECTION
+async function detectManifestFileType(file) {
+  const ext = file.name.toLowerCase().split('.').pop() || '';
+  const mimeType = file.type || '';
+  let magicBytes = null;
+
+  try {
+    const slice = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(new Uint8Array(e.target.result).slice(0, 8));
+      reader.readAsArrayBuffer(file.slice(0, 8));
+    });
+    magicBytes = Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    // Magic byte detection failed, continue with ext+mime
+  }
+
+  // Check by extension first
+  if (['csv'].includes(ext)) return 'csv';
+  if (['tsv'].includes(ext)) return 'tsv';
+  if (['txt'].includes(ext)) return 'txt';
+  if (['xlsx'].includes(ext)) return 'xlsx';
+  if (['xls'].includes(ext)) return 'xls';
+  if (['ods'].includes(ext)) return 'ods';
+  if (['pdf'].includes(ext)) return 'pdf';
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return 'image';
+
+  // Check by MIME type
+  if (mimeType.includes('text/csv')) return 'csv';
+  if (mimeType.includes('text/tab-separated')) return 'tsv';
+  if (mimeType.includes('text/plain')) return 'txt';
+  if (mimeType.includes('spreadsheet')) return 'xlsx';
+  if (mimeType.includes('pdf')) return 'pdf';
+  if (mimeType.includes('image')) return 'image';
+
+  // Check by magic bytes
+  if (magicBytes) {
+    if (magicBytes.startsWith('504b')) return 'xlsx'; // ZIP signature
+    if (magicBytes.startsWith('d0cf')) return 'xls';  // OLE2 signature
+    if (magicBytes.startsWith('ffd8')) return 'image'; // JPEG
+    if (magicBytes.startsWith('8950')) return 'image'; // PNG
+    if (magicBytes.startsWith('4749')) return 'image'; // GIF
+    if (magicBytes.startsWith('2521')) return 'pdf';   // PDF %!
+  }
+
+  return 'unknown';
+}
+
+// STEP 3: STRUCTURED FORMAT ADAPTERS
+function parseCsvManifest(file, rawData) {
+  return new Promise((resolve) => {
+    const parsed = Papa.parse(rawData, {
+      header: false,
+      dynamicTyping: false,
+      skipEmptyLines: false
+    });
+
+    if (parsed.errors && parsed.errors.length > 0) {
+      resolve({
+        ok: false,
+        errorCode: 'parse_error',
+        message: 'CSV parse failed: ' + parsed.errors[0].message
+      });
+      return;
+    }
+
+    const rawRows = parsed.data.filter(row => row.filter(Boolean).length > 0);
+    resolve({
+      ok: true,
+      fileName: file.name,
+      fileType: 'csv',
+      sourceSections: [{
+        name: 'CSV Data',
+        rawRows: rawRows,
+        sourceRowMap: rawRows.map((_, idx) => idx)
+      }],
+      warnings: []
+    });
+  });
+}
+
+function parseTsvManifest(file, rawData) {
+  return new Promise((resolve) => {
+    const parsed = Papa.parse(rawData, {
+      header: false,
+      delimiter: '\t',
+      dynamicTyping: false,
+      skipEmptyLines: false
+    });
+
+    if (parsed.errors && parsed.errors.length > 0) {
+      resolve({
+        ok: false,
+        errorCode: 'parse_error',
+        message: 'TSV parse failed: ' + parsed.errors[0].message
+      });
+      return;
+    }
+
+    const rawRows = parsed.data.filter(row => row.filter(Boolean).length > 0);
+    resolve({
+      ok: true,
+      fileName: file.name,
+      fileType: 'tsv',
+      sourceSections: [{
+        name: 'TSV Data',
+        rawRows: rawRows,
+        sourceRowMap: rawRows.map((_, idx) => idx)
+      }],
+      warnings: []
+    });
+  });
+}
+
+function parseTxtManifest(file, rawData) {
+  return new Promise((resolve) => {
+    const lines = rawData.split(/\r?\n/).filter(l => l.trim());
+
+    // Try to detect delimiter
+    let delimiter = null;
+    let delimiterConfidence = 0;
+    const delimiters = [
+      { char: '\t', name: 'tab', minConfidence: 0.7 },
+      { char: ',', name: 'comma', minConfidence: 0.7 },
+      { char: ';', name: 'semicolon', minConfidence: 0.6 },
+      { char: '|', name: 'pipe', minConfidence: 0.6 }
+    ];
+
+    for (const delim of delimiters) {
+      const firstLine = lines[0] || '';
+      const delimCount = (firstLine.match(new RegExp('\\' + delim.char, 'g')) || []).length;
+
+      if (delimCount > 0) {
+        const consistency = lines.filter(line => {
+          const lineDelimCount = (line.match(new RegExp('\\' + delim.char, 'g')) || []).length;
+          return lineDelimCount === delimCount;
+        }).length / Math.max(1, lines.length);
+
+        if (consistency >= delim.minConfidence && consistency > delimiterConfidence) {
+          delimiter = delim.char;
+          delimiterConfidence = consistency;
+        }
+      }
+    }
+
+    if (!delimiter || delimiterConfidence < 0.5) {
+      resolve({
+        ok: false,
+        errorCode: 'ambiguous_delimiter',
+        message: 'Could not auto-detect delimiter.',
+        fileName: file.name
+      });
+      return;
+    }
+
+    const rawRows = lines.map(line => line.split(delimiter).map(f => f.trim()));
+    resolve({
+      ok: true,
+      fileName: file.name,
+      fileType: 'txt',
+      sourceSections: [{
+        name: 'TXT Data',
+        rawRows: rawRows,
+        sourceRowMap: rawRows.map((_, idx) => idx)
+      }],
+      warnings: []
+    });
+  });
+}
+
+function parseSpreadsheetManifest(file, fileType, rawData) {
+  return new Promise((resolve) => {
+    try {
+      const workbook = XLSX.read(rawData, { type: 'array' });
+      const sheetNames = workbook.SheetNames.filter(name => {
+        const sheet = workbook.Sheets[name];
+        return sheet && Object.keys(sheet).length > 1;
+      });
+
+      if (sheetNames.length === 0) {
+        resolve({
+          ok: false,
+          errorCode: 'no_sheets',
+          message: 'No valid sheets found in file'
+        });
+        return;
+      }
+
+      const sourceSections = sheetNames.map(sheetName => {
+        const worksheet = workbook.Sheets[sheetName];
+        const aoa = XLSX.utils.sheet_to_json(worksheet, {
+          header: 1,
+          defval: '',
+          raw: false  // KEY: Preserve formatted display text (leading zeros)
+        });
+        const rawRows = aoa.filter(row => row.filter(Boolean).length > 0);
+        return {
+          name: sheetName,
+          rawRows: rawRows,
+          sourceRowMap: rawRows.map((_, idx) => idx)
+        };
+      });
+
+      resolve({
+        ok: true,
+        fileName: file.name,
+        fileType: fileType,
+        sourceSections: sourceSections,
+        warnings: sourceSections.length > 1 ? [`Multiple sheets: ${sourceSections.map(s => s.name).join(', ')}`] : []
+      });
+    } catch (error) {
+      resolve({
+        ok: false,
+        errorCode: 'parse_error',
+        message: 'Spreadsheet parse failed: ' + error.message
+      });
+    }
+  });
+}
+
+// STEP 4: CANONICAL IMPORT STRUCTURE
+async function importManifestFile(file) {
+  const depCheck = checkManifestImportDependencies();
+  if (!depCheck.ok) {
+    return {
+      ok: false,
+      errorCode: 'dependency_missing',
+      message: 'Manifest import library failed to load. Refresh and try again.',
+      missingLibs: depCheck.missing
+    };
+  }
+
+  const fileType = await detectManifestFileType(file);
+
+  if (fileType === 'unknown') {
+    return {
+      ok: false,
+      errorCode: 'unsupported_format',
+      message: 'File type not recognized. Supported: CSV, TSV, TXT, Excel, ODS, PDF, images'
+    };
+  }
+
+  if (fileType === 'pdf') {
+    return {
+      ok: false,
+      errorCode: 'pending_parser',
+      message: 'PDF format detected but parser coming in next phase',
+      fileType: 'pdf'
+    };
+  }
+
+  if (fileType === 'image') {
+    return {
+      ok: false,
+      errorCode: 'pending_parser',
+      message: 'Image format detected but OCR coming in future phase',
+      fileType: 'image'
+    };
+  }
+
+  // Read file data
+  const fileData = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(new Error('File read failed'));
+
+    if (['xlsx', 'xls', 'ods'].includes(fileType)) {
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.readAsText(file);
+    }
+  });
+
+  let result;
+  if (fileType === 'csv') {
+    result = await parseCsvManifest(file, fileData);
+  } else if (fileType === 'tsv') {
+    result = await parseTsvManifest(file, fileData);
+  } else if (fileType === 'txt') {
+    result = await parseTxtManifest(file, fileData);
+  } else if (['xlsx', 'xls', 'ods'].includes(fileType)) {
+    result = await parseSpreadsheetManifest(file, fileType, fileData);
+  }
+
+  if (!result.ok) {
+    return result;
+  }
+
+  // Build canonical structure
+  return {
+    version: 1,
+    fileName: file.name,
+    detectedType: fileType,
+    importedAt: new Date().toISOString(),
+    sourceSections: result.sourceSections,
+    warnings: result.warnings || []
+  };
+}
+
 // Global state for manifest import
 let currentRawRows = [];
 let currentWorkbook = null;
@@ -2435,29 +2755,46 @@ function normalizeManifestRowsV2() {
   });
 }
 
-// Standalone manifest file handler (Phase 1B replaces Phase 1)
+// PHASE 1: Unified manifest file handler with universal format support
 async function handleManifestFileSelected(e) {
   const file = e.target.files[0];
   if (!file) return;
 
-  currentFile = file.name;
   const msgEl = $('manifest-upload-msg');
+  msgEl.textContent = 'Processing file...';
+  msgEl.style.color = 'var(--mu)';
 
   try {
-    if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-      msgEl.textContent = 'Reading Excel file...';
-      msgEl.style.color = 'var(--mu)';
-      handleXlsxFile(file);
-    } else if (file.name.endsWith('.csv')) {
-      msgEl.textContent = 'Reading CSV file...';
-      msgEl.style.color = 'var(--mu)';
-      handleCsvFile(file);
-    } else {
-      msgEl.textContent = '❌ Format not supported (CSV or XLSX only)';
+    const result = await importManifestFile(file);
+
+    if (!result.ok) {
+      if (result.errorCode === 'pending_parser') {
+        msgEl.textContent = `⚠️ ${result.message}`;
+        msgEl.style.color = 'var(--gd)';
+        return;
+      }
+      if (result.errorCode === 'dependency_missing') {
+        msgEl.textContent = result.message;
+        msgEl.style.color = 'var(--dw)';
+        return;
+      }
+      msgEl.textContent = `❌ ${result.message || 'Import failed'}`;
       msgEl.style.color = 'var(--dw)';
+      return;
     }
+
+    // Extract rawRows from first section for header detection
+    const section = result.sourceSections[0];
+    currentRawRows = section.rawRows;
+    currentFile = file.name;
+    currentSheetName = result.sourceSections.length > 1 ? section.name : null;
+
+    // Proceed with header detection
+    msgEl.textContent = '';
+    msgEl.style.color = 'var(--mu)';
+    proceedWithHeaderDetection();
   } catch (error) {
-    msgEl.textContent = '❌ Error: ' + error.message;
+    msgEl.textContent = `❌ Error: ${error.message}`;
     msgEl.style.color = 'var(--dw)';
   }
 }
@@ -2548,7 +2885,188 @@ function confirmClearOrBack(){
   }
 }
 
-// ===== PHASE 1B: ADAPTIVE MANIFEST IMPORTER =====
+// ===== PHASE 1 COMPREHENSIVE TESTS =====
+async function runPhase1Tests() {
+  console.log('=== PHASE 1 COMPREHENSIVE TEST SUITE ===\n');
+
+  const results = {
+    'Dependency health check': false,
+    'CSV parsing': false,
+    'TSV parsing': false,
+    'TXT delimiter detection': false,
+    'XLSX parsing': false,
+    'XLSX leading-zero preservation': false,
+    'Header detection - Walgreens': false,
+    'Header detection - CVS': false,
+    'Header detection - Generic': false,
+    'File type detection': false,
+    'Unknown format graceful': false,
+    'Canonical structure shape': false,
+    'PDF detection': false,
+    'Image detection': false
+  };
+
+  // Test 1: Dependency health check
+  try {
+    const depCheck = checkManifestImportDependencies();
+    results['Dependency health check'] = depCheck.ok;
+    console.log(`✓ Dependency check: ${depCheck.ok ? 'PASS' : 'FAIL'} (missing: ${depCheck.missing.join(', ') || 'none'})\n`);
+  } catch (e) {
+    console.log(`✗ Dependency check error: ${e.message}\n`);
+  }
+
+  // Test 2: CSV Parsing
+  try {
+    const csvData = 'UPC,Title,Brand\n001234567890,Test Product,Test Brand';
+    const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
+    const csvResult = await importManifestFile(csvFile);
+    results['CSV parsing'] = csvResult.ok && csvResult.fileType === 'csv' && csvResult.sourceSections[0].rawRows.length > 0;
+    console.log(`✓ CSV parsing: ${results['CSV parsing'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ CSV parsing error: ${e.message}\n`);
+  }
+
+  // Test 3: TSV Parsing
+  try {
+    const tsvData = 'UPC\tTitle\tBrand\n001234567890\tTest Product\tTest Brand';
+    const tsvFile = new File([tsvData], 'test.tsv', { type: 'text/tab-separated-values' });
+    const tsvResult = await importManifestFile(tsvFile);
+    results['TSV parsing'] = tsvResult.ok && tsvResult.fileType === 'tsv';
+    console.log(`✓ TSV parsing: ${results['TSV parsing'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ TSV parsing error: ${e.message}\n`);
+  }
+
+  // Test 4: TXT Delimiter Detection
+  try {
+    const txtData = 'UPC;Title;Brand\n001234567890;Test Product;Test Brand';
+    const txtFile = new File([txtData], 'test.txt', { type: 'text/plain' });
+    const txtResult = await importManifestFile(txtFile);
+    results['TXT delimiter detection'] = txtResult.ok && txtResult.fileType === 'txt';
+    console.log(`✓ TXT delimiter detection: ${results['TXT delimiter detection'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ TXT delimiter detection error: ${e.message}\n`);
+  }
+
+  // Test 5: File Type Detection
+  try {
+    const csvFile = new File(['UPC,Title'], 'test.csv');
+    const detectedType = await detectManifestFileType(csvFile);
+    results['File type detection'] = detectedType === 'csv';
+    console.log(`✓ File type detection: ${results['File type detection'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ File type detection error: ${e.message}\n`);
+  }
+
+  // Test 6: PDF Detection
+  try {
+    const pdfFile = new File(['dummy'], 'test.pdf', { type: 'application/pdf' });
+    const pdfType = await detectManifestFileType(pdfFile);
+    results['PDF detection'] = pdfType === 'pdf';
+    console.log(`✓ PDF detection: ${results['PDF detection'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ PDF detection error: ${e.message}\n`);
+  }
+
+  // Test 7: Image Detection
+  try {
+    const imgFile = new File(['dummy'], 'test.jpg', { type: 'image/jpeg' });
+    const imgType = await detectManifestFileType(imgFile);
+    results['Image detection'] = imgType === 'image';
+    console.log(`✓ Image detection: ${results['Image detection'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Image detection error: ${e.message}\n`);
+  }
+
+  // Test 8: Unknown Format Graceful
+  try {
+    const binFile = new File(['\x00\x01\x02'], 'test.bin', { type: 'application/octet-stream' });
+    const importResult = await importManifestFile(binFile);
+    results['Unknown format graceful'] = !importResult.ok && importResult.errorCode === 'unsupported_format';
+    console.log(`✓ Unknown format graceful: ${results['Unknown format graceful'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Unknown format graceful error: ${e.message}\n`);
+  }
+
+  // Test 9: Canonical Structure Shape
+  try {
+    const csvData = 'UPC,Title\n001,Product1';
+    const csvFile = new File([csvData], 'test.csv', { type: 'text/csv' });
+    const result = await importManifestFile(csvFile);
+    const hasRequired = result.ok &&
+      result.version === 1 &&
+      result.fileName &&
+      result.detectedType &&
+      result.importedAt &&
+      Array.isArray(result.sourceSections) &&
+      result.sourceSections[0]?.name &&
+      Array.isArray(result.sourceSections[0]?.rawRows) &&
+      Array.isArray(result.sourceSections[0]?.sourceRowMap);
+    results['Canonical structure shape'] = hasRequired;
+    console.log(`✓ Canonical structure: ${results['Canonical structure shape'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Canonical structure error: ${e.message}\n`);
+  }
+
+  // Test 10: Header Detection - Walgreens
+  try {
+    const data = 'Walgreens Item #,Description,Department,UPC,Qty Expected,Unit Retail Price,Extended Retail\n12345,Test Item,Health,912345678901,50,9.99,499.50';
+    const file = new File([data], 'walgreens.csv', { type: 'text/csv' });
+    const result = await importManifestFile(file);
+    if (result.ok) {
+      const rawRows = result.sourceSections[0].rawRows;
+      const detection = detectHeaderRow(rawRows);
+      results['Header detection - Walgreens'] = detection.rowIndex === 0 && detection.score > 20;
+    }
+    console.log(`✓ Header detection - Walgreens: ${results['Header detection - Walgreens'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Header detection - Walgreens error: ${e.message}\n`);
+  }
+
+  // Test 11: Header Detection - CVS
+  try {
+    const data = 'CVS Item Number,Item Description,Retail Price,Quantity Expected,UPC Code\n67890,Test CVS Item,12.50,100,867530000191';
+    const file = new File([data], 'cvs.csv', { type: 'text/csv' });
+    const result = await importManifestFile(file);
+    if (result.ok) {
+      const rawRows = result.sourceSections[0].rawRows;
+      const detection = detectHeaderRow(rawRows);
+      results['Header detection - CVS'] = detection.rowIndex === 0 && detection.score > 20;
+    }
+    console.log(`✓ Header detection - CVS: ${results['Header detection - CVS'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Header detection - CVS error: ${e.message}\n`);
+  }
+
+  // Test 12: Header Detection - Generic
+  try {
+    const data = 'SKU,Title,Brand,Category,Expected Qty,Unit Retail,Extended Retail\nGEN-001,Generic Product,Generic Brand,Electronics,25,19.99,499.75';
+    const file = new File([data], 'generic.csv', { type: 'text/csv' });
+    const result = await importManifestFile(file);
+    if (result.ok) {
+      const rawRows = result.sourceSections[0].rawRows;
+      const detection = detectHeaderRow(rawRows);
+      results['Header detection - Generic'] = detection.rowIndex === 0 && detection.score > 20;
+    }
+    console.log(`✓ Header detection - Generic: ${results['Header detection - Generic'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    console.log(`✗ Header detection - Generic error: ${e.message}\n`);
+  }
+
+  // Summary
+  const passed = Object.values(results).filter(v => v).length;
+  const total = Object.keys(results).length;
+  console.log('=== TEST SUMMARY ===');
+  for (const [test, result] of Object.entries(results)) {
+    console.log(`  ${result ? '✓' : '✗'} ${test}`);
+  }
+  console.log(`\nPassed: ${passed}/${total}`);
+
+  return passed === total;
+}
+
+// Add test runner to window for manual testing
+window.runPhase1Tests = runPhase1Tests;
 
 </script>
 
@@ -2703,9 +3221,9 @@ function confirmClearOrBack(){
   <div class="manifest-upload-zone" onclick="document.getElementById('manifest-file-input').click()" ontouchend="event.preventDefault();document.getElementById('manifest-file-input').click()">
     <div style="font-size:32px">📁</div>
     <div style="font-size:15px;font-weight:700">Choose Manifest File</div>
-    <p>CSV or Excel (.xlsx)</p>
+    <p>Excel, CSV, TSV, Text, ODS | PDF & images detected</p>
   </div>
-  <input type="file" id="manifest-file-input" accept=".csv,.xlsx" style="display:none">
+  <input type="file" id="manifest-file-input" accept=".csv,.tsv,.txt,.xlsx,.xls,.ods,.pdf,.jpg,.jpeg,.png,.webp" style="display:none">
 
   <div id="manifest-upload-msg" style="font-size:13px;color:var(--mu);text-align:center;min-height:16px;margin-top:12px"></div>
 </div>
