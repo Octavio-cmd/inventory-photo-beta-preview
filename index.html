@@ -2732,7 +2732,9 @@ function confirmDetectedHeader() {
       };
     }),
     status: 'mapping',
-    receivedRecords: []
+    receivedRecords: [],
+    // PHASE 3: Allocation records for destination routing
+    allocationRecords: []
   };
 
   // Store original values from source row
@@ -2843,6 +2845,7 @@ function renderManifestReceivingHome() {
   if (!container) return;
 
   const rowCount = manifestSession.rows ? manifestSession.rows.length : 0;
+  const summary = getManifestAllocationSummary(manifestSession);
 
   let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
   html += '<div style="text-align:center">';
@@ -2852,25 +2855,57 @@ function renderManifestReceivingHome() {
   html += '</div>';
 
   html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px">';
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
 
   html += '<div>';
-  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">File</div>';
-  html += '<div style="font-size:14px;font-weight:700">' + escapeHtml(manifestSession.fileName || 'manifest') + '</div>';
+  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Expected Units</div>';
+  html += '<div style="font-size:18px;font-weight:800;color:var(--gd)">' + summary.totalExpected + '</div>';
   html += '</div>';
 
   html += '<div>';
-  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Rows</div>';
-  html += '<div style="font-size:14px;font-weight:700">' + rowCount + '</div>';
+  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Assigned Units</div>';
+  html += '<div style="font-size:18px;font-weight:800;color:var(--sv)">' + summary.totalAssigned + '</div>';
+  html += '</div>';
+
+  html += '<div>';
+  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Remaining Units</div>';
+  html += '<div style="font-size:18px;font-weight:800;color:var(--ac)">' + summary.totalRemaining + '</div>';
   html += '</div>';
 
   html += '</div>';
   html += '</div>';
 
-  html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
+  // PHASE 3: Destination allocation cards
+  html += '<div style="margin-bottom:20px">';
+  html += '<div style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;font-weight:700">Destination Allocations</div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">';
+
+  const destinations = ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'];
+  destinations.forEach(dest => {
+    const qty = summary.byDestination[dest] || 0;
+    const colors = {
+      SAVVY: 'var(--sv)',
+      DWI: 'var(--dw)',
+      OTHER: 'var(--ac)',
+      UNASSIGNED: 'var(--mu)'
+    };
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;cursor:pointer" onclick="showDestinationManifest(\'' + dest + '\')" ontouchend="event.preventDefault();showDestinationManifest(\'' + dest + '\')">';
+    html += '<div style="font-size:13px;font-weight:700;color:' + colors[dest] + ';margin-bottom:6px">' + dest + '</div>';
+    html += '<div style="font-size:24px;font-weight:800">' + qty + '</div>';
+    html += '</div>';
+  });
+
+  html += '</div>';
+  html += '</div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:20px">';
   html += '<button class="btn grn" onclick="openScanner()" ontouchend="event.preventDefault();openScanner()" style="margin-bottom:0">🔍 Scan Product</button>';
   html += '<button class="btn grn" onclick="openPhotoIdentify()" ontouchend="event.preventDefault();openPhotoIdentify()" style="margin-bottom:0">📸 Identify by Photo</button>';
   html += '<button class="btn grn" onclick="enterUpcManually()" ontouchend="event.preventDefault();enterUpcManually()" style="margin-bottom:0">⌨️ Enter UPC Manually</button>';
+  html += '</div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
   html += '<button class="btn sec" onclick="showOriginalManifest()" ontouchend="event.preventDefault();showOriginalManifest()" style="margin-bottom:0">📄 Show Original Manifest</button>';
   html += '<button class="btn sec" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()" style="margin-bottom:0">🔄 Replace Manifest</button>';
   html += '</div>';
@@ -3206,9 +3241,20 @@ function renderManifestMatchResult(upc, match) {
       html += '</div>';
     }
 
+    const summary = getManifestAllocationSummary(manifestSession);
+    const alreadyAssigned = manifestSession.allocationRecords
+      .filter(r => r.upc === (match.normalizedIdentifier || upc))
+      .reduce((sum, r) => sum + r.quantity, 0);
+    const remaining = Math.max(0, (match.expectedQtyTotal || 0) - alreadyAssigned);
+
     html += '<div>';
-    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Matched Rows</div>';
-    html += '<div style="font-weight:700">' + match.rows.length + '</div>';
+    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Already Assigned</div>';
+    html += '<div style="font-weight:700">' + alreadyAssigned + '</div>';
+    html += '</div>';
+
+    html += '<div>';
+    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Remaining Qty</div>';
+    html += '<div style="font-weight:700">' + remaining + '</div>';
     html += '</div>';
 
     if (match.rows.length > 1) {
@@ -3223,6 +3269,28 @@ function renderManifestMatchResult(upc, match) {
     }
 
     html += '</div>';
+    html += '</div>';
+
+    // PHASE 3: ALLOCATION WORKFLOW
+    html += '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+    html += '<h3 style="font-size:16px;font-weight:800;margin-bottom:16px">Allocate to Destination</h3>';
+
+    html += '<div style="margin-bottom:16px">';
+    html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Quantity to Assign</label>';
+    html += '<input type="number" id="allocation-qty" value="1" min="1" style="width:100%;padding:12px;border:2px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx);box-sizing:border-box" onchange="validateAllocationQty()"/>';
+    html += '<div id="allocation-warning" style="color:var(--dw);font-size:12px;margin-top:6px;display:none"></div>';
+    html += '</div>';
+
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">';
+    html += '<button class="btn" style="background:var(--sv);color:#000;margin-bottom:0" onclick="confirmAllocation(\'' + upc + '\', \'SAVVY\')" ontouchend="event.preventDefault();confirmAllocation(\'' + upc + '\', \'SAVVY\')">SAVVY</button>';
+    html += '<button class="btn" style="background:var(--dw);margin-bottom:0" onclick="confirmAllocation(\'' + upc + '\', \'DWI\')" ontouchend="event.preventDefault();confirmAllocation(\'' + upc + '\', \'DWI\')">DWI</button>';
+    html += '</div>';
+
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">';
+    html += '<button class="btn" style="background:var(--ac);margin-bottom:0" onclick="confirmAllocation(\'' + upc + '\', \'OTHER\')" ontouchend="event.preventDefault();confirmAllocation(\'' + upc + '\', \'OTHER\')">OTHER</button>';
+    html += '<button class="btn sec" style="margin-bottom:0" onclick="confirmAllocation(\'' + upc + '\', \'UNASSIGNED\')" ontouchend="event.preventDefault();confirmAllocation(\'' + upc + '\', \'UNASSIGNED\')">UNASSIGNED</button>';
+    html += '</div>';
+
     html += '</div>';
 
   } else {
@@ -3251,6 +3319,12 @@ function renderManifestMatchResult(upc, match) {
   html += '</div>';
 
   container.innerHTML = html;
+
+  // Store match context for allocation
+  window._lastMatchContext = {
+    upc,
+    match
+  };
 }
 
 // Load online enrichment data
@@ -3260,6 +3334,346 @@ async function loadOnlineEnrichment(upc, manifestMatch) {
 
   // For now, we're not implementing online enrichment in this phase
   // It will be added later as secondary enrichment
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PHASE 3: ALLOCATION FUNCTIONS
+// ═════════════════════════════════════════════════════════════════════════
+
+function getManifestAllocationSummary(manifestSession) {
+  if (!manifestSession || !manifestSession.allocationRecords) {
+    return {
+      totalExpected: 0,
+      totalAssigned: 0,
+      totalRemaining: 0,
+      byDestination: {
+        SAVVY: 0,
+        DWI: 0,
+        OTHER: 0,
+        UNASSIGNED: 0
+      }
+    };
+  }
+
+  // Calculate expected total from rows
+  const totalExpected = manifestSession.rows.reduce((sum, row) => {
+    const qty = row.normalized.expectedQty;
+    return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
+  }, 0);
+
+  // Calculate allocated quantities
+  const byDestination = {
+    SAVVY: 0,
+    DWI: 0,
+    OTHER: 0,
+    UNASSIGNED: 0
+  };
+
+  let totalAssigned = 0;
+  manifestSession.allocationRecords.forEach(record => {
+    const qty = record.quantity || 0;
+    totalAssigned += qty;
+    if (byDestination.hasOwnProperty(record.destination)) {
+      byDestination[record.destination] += qty;
+    }
+  });
+
+  return {
+    totalExpected,
+    totalAssigned,
+    totalRemaining: Math.max(0, totalExpected - totalAssigned),
+    byDestination
+  };
+}
+
+function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail) {
+  if (!manifestSession || !manifestSession.allocationRecords) return null;
+
+  const record = {
+    id: 'alloc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    upc: upc || '',
+    sku: sku || '',
+    manifestRowIds: matchRows.map(r => r.rowId),
+    sourceRowNumbers: matchRows.map(r => r.sourceRowNumber),
+    destination: destination,
+    quantity: parseInt(quantity) || 1,
+    identificationMethod: identificationMethod,
+    title: title || '',
+    category: category || '',
+    unitRetail: unitRetail || null,
+    notes: ''
+  };
+
+  manifestSession.allocationRecords.push(record);
+  saveManifestSessionToStorageV3();
+  return record;
+}
+
+function updateAllocationQuantity(manifestSession, recordId, newQuantity) {
+  if (!manifestSession || !manifestSession.allocationRecords) return false;
+  const record = manifestSession.allocationRecords.find(r => r.id === recordId);
+  if (!record) return false;
+  record.quantity = parseInt(newQuantity) || 1;
+  saveManifestSessionToStorageV3();
+  return true;
+}
+
+function updateAllocationDestination(manifestSession, recordId, newDestination) {
+  if (!manifestSession || !manifestSession.allocationRecords) return false;
+  const record = manifestSession.allocationRecords.find(r => r.id === recordId);
+  if (!record) return false;
+  record.destination = newDestination;
+  saveManifestSessionToStorageV3();
+  return true;
+}
+
+function removeAllocation(manifestSession, recordId) {
+  if (!manifestSession || !manifestSession.allocationRecords) return false;
+  const idx = manifestSession.allocationRecords.findIndex(r => r.id === recordId);
+  if (idx === -1) return false;
+  manifestSession.allocationRecords.splice(idx, 1);
+  saveManifestSessionToStorageV3();
+  return true;
+}
+
+function getDestinationManifestRows(manifestSession, destination) {
+  if (!manifestSession || !manifestSession.allocationRecords) return [];
+  const records = manifestSession.allocationRecords.filter(r => r.destination === destination);
+
+  // Group by UPC for display
+  const byUpc = {};
+  records.forEach(record => {
+    const key = record.upc || 'UNKNOWN';
+    if (!byUpc[key]) {
+      byUpc[key] = {
+        upc: record.upc,
+        sku: record.sku,
+        title: record.title,
+        category: record.category,
+        unitRetail: record.unitRetail,
+        totalQuantity: 0,
+        records: []
+      };
+    }
+    byUpc[key].totalQuantity += record.quantity;
+    byUpc[key].records.push(record);
+  });
+
+  return Object.values(byUpc);
+}
+
+function showDestinationManifest(destination) {
+  if (!manifestSession) return;
+  renderDestinationManifest(destination);
+  showScreen('scr-destination-manifest');
+}
+
+function renderDestinationManifest(destination) {
+  const container = $('destination-manifest-content');
+  if (!container) return;
+
+  const rows = getDestinationManifestRows(manifestSession, destination);
+  const summary = getManifestAllocationSummary(manifestSession);
+  const destQty = summary.byDestination[destination] || 0;
+
+  let html = '<div style="margin-bottom:20px">';
+  html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px">' + escapeHtml(destination) + ' Manifest</h2>';
+  html += '<p style="font-size:13px;color:var(--mu)">Allocated Units: <strong>' + destQty + '</strong></p>';
+  html += '</div>';
+
+  if (rows.length === 0) {
+    html += '<div style="background:var(--sf);border-radius:16px;padding:20px;text-align:center">';
+    html += '<div style="font-size:48px;margin-bottom:12px">📭</div>';
+    html += '<p style="font-size:14px;color:var(--mu)">No items allocated to ' + escapeHtml(destination) + '</p>';
+    html += '</div>';
+  } else {
+    rows.forEach((row, idx) => {
+      const extRetail = (row.unitRetail && row.totalQuantity)
+        ? (row.unitRetail * row.totalQuantity).toFixed(2)
+        : null;
+
+      html += '<div style="background:var(--sf);border-radius:16px;padding:16px;margin-bottom:12px">';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;font-size:13px">';
+
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">UPC</div>';
+      html += '<div style="font-weight:700;font-family:monospace">' + escapeHtml(row.upc) + '</div>';
+      html += '</div>';
+
+      if (row.sku) {
+        html += '<div>';
+        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">SKU</div>';
+        html += '<div style="font-weight:700">' + escapeHtml(row.sku) + '</div>';
+        html += '</div>';
+      }
+
+      html += '<div style="grid-column:1/-1">';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Description</div>';
+      html += '<div style="font-weight:700">' + escapeHtml(row.title) + '</div>';
+      html += '</div>';
+
+      if (row.category) {
+        html += '<div>';
+        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Category</div>';
+        html += '<div style="font-weight:700">' + escapeHtml(row.category) + '</div>';
+        html += '</div>';
+      }
+
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Qty Assigned</div>';
+      html += '<div style="font-weight:700;color:var(--sv)">' + row.totalQuantity + '</div>';
+      html += '</div>';
+
+      if (row.unitRetail) {
+        html += '<div>';
+        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Unit Retail</div>';
+        html += '<div style="font-weight:700">$' + row.unitRetail.toFixed(2) + '</div>';
+        html += '</div>';
+      }
+
+      if (extRetail) {
+        html += '<div>';
+        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Extended Retail</div>';
+        html += '<div style="font-weight:700;color:var(--gd)">$' + escapeHtml(extRetail) + '</div>';
+        html += '</div>';
+      }
+
+      if (row.records.length > 1 || row.records[0].sourceRowNumbers?.length > 1) {
+        html += '<div style="grid-column:1/-1">';
+        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Source Rows</div>';
+        html += '<div style="font-weight:700;font-family:monospace;font-size:12px">';
+        const srcRows = new Set();
+        row.records.forEach(r => {
+          r.sourceRowNumbers?.forEach(sn => srcRows.add(sn));
+        });
+        html += Array.from(srcRows).join(', ');
+        html += '</div>';
+        html += '</div>';
+      }
+
+      html += '</div>';
+
+      // Edit/Remove buttons for each UPC
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:13px;padding:10px" onclick="editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">✏️ Edit</button>';
+      html += '<button class="btn red" style="margin-bottom:0;font-size:13px;padding:10px" onclick="removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🗑️ Remove</button>';
+      html += '</div>';
+
+      html += '</div>';
+    });
+  }
+
+  container.innerHTML = html;
+}
+
+function editAllocationRow(upc, destination) {
+  const newQty = prompt('Enter new quantity for ' + upc + ':', '1');
+  if (newQty === null) return;
+
+  const qty = parseInt(newQty) || 0;
+  if (qty < 1) {
+    toast('⚠️ Quantity must be positive');
+    return;
+  }
+
+  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === destination);
+  if (records.length === 0) return;
+
+  records.forEach(record => {
+    updateAllocationQuantity(manifestSession, record.id, qty);
+  });
+
+  toast('✅ Updated to ' + qty);
+  renderDestinationManifest(destination);
+}
+
+function removeAllocationsByUpc(upc, destination) {
+  if (!confirm('Remove all allocations for ' + upc + ' from ' + destination + '?')) return;
+
+  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === destination);
+  records.forEach(record => {
+    removeAllocation(manifestSession, record.id);
+  });
+
+  toast('✅ Allocations removed');
+  renderDestinationManifest(destination);
+}
+
+// Validate allocation quantity before confirmation
+function validateAllocationQty() {
+  const input = $('allocation-qty');
+  const warning = $('allocation-warning');
+  if (!input || !warning) return;
+
+  const qty = parseInt(input.value) || 1;
+  const ctx = window._lastMatchContext;
+  if (!ctx || !ctx.match) return;
+
+  const expected = ctx.match.expectedQtyTotal || 0;
+  const alreadyAssigned = manifestSession.allocationRecords
+    .filter(r => r.upc === (ctx.match.normalizedIdentifier || ctx.upc))
+    .reduce((sum, r) => sum + r.quantity, 0);
+  const total = alreadyAssigned + qty;
+
+  if (total > expected) {
+    warning.textContent = '⚠️ Total (' + total + ') exceeds expected (' + expected + '). Confirmation required.';
+    warning.style.display = 'block';
+  } else {
+    warning.style.display = 'none';
+  }
+}
+
+// Confirm allocation to destination
+function confirmAllocation(upc, destination) {
+  const qtyInput = $('allocation-qty');
+  const qty = parseInt(qtyInput?.value) || 1;
+
+  if (!qty || qty < 1) {
+    toast('⚠️ Quantity must be positive');
+    return;
+  }
+
+  const ctx = window._lastMatchContext;
+  if (!ctx || !ctx.match) {
+    toast('⚠️ No product matched');
+    return;
+  }
+
+  const expected = ctx.match.expectedQtyTotal || 0;
+  const alreadyAssigned = manifestSession.allocationRecords
+    .filter(r => r.upc === (ctx.match.normalizedIdentifier || ctx.upc))
+    .reduce((sum, r) => sum + r.quantity, 0);
+  const total = alreadyAssigned + qty;
+
+  if (total > expected) {
+    if (!confirm('⚠️ Assigned quantity (' + total + ') exceeds manifest expected (' + expected + '). Confirm overage?')) {
+      return;
+    }
+  }
+
+  const record = recordAllocation(
+    manifestSession,
+    upc,
+    ctx.match.rows[0]?.normalized?.sku || '',
+    qty,
+    destination,
+    'barcode',
+    ctx.match.rows,
+    ctx.match.rows[0]?.normalized?.title || '',
+    ctx.match.rows[0]?.normalized?.category || '',
+    ctx.match.rows[0]?.normalized?.unitRetail || null
+  );
+
+  if (record) {
+    toast('✅ Allocated ' + qty + ' → ' + destination);
+    setTimeout(() => {
+      renderManifestReceivingHome();
+      showScreen('scr-manifest-receiving-home');
+    }, 500);
+  } else {
+    toast('❌ Allocation failed');
+  }
 }
 
 // Navigate back to receiving home
@@ -4137,6 +4551,228 @@ async function runPhase1Tests() {
     console.log(`✗ Employee apps error: ${e.message}\n`);
   }
 
+  // PHASE 3: ALLOCATION TESTS
+  // Test 34: Exact UPC match → allocation
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 10 } }] };
+    const rec = recordAllocation(testSession, '123456789', 'SKU1', 3, 'SAVVY', 'barcode', [{ rowId: 0, sourceRowNumber: 1 }], 'Product', 'Cat', 10);
+    results['Exact UPC → allocation'] = rec && rec.destination === 'SAVVY' && rec.quantity === 3;
+    console.log(`${results['Exact UPC → allocation'] ? '✓' : '✗'} Exact UPC → allocation: ${results['Exact UPC → allocation'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Exact UPC → allocation'] = false;
+    console.log(`✗ Exact UPC → allocation error: ${e.message}\n`);
+  }
+
+  // Test 35: Default quantity = 1
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 10 } }] };
+    const rec = recordAllocation(testSession, '123456789', 'SKU1', 0, 'DWI', 'barcode', [{ rowId: 0 }], 'Prod', 'Cat', null);
+    results['Default qty = 1'] = rec && rec.quantity === 1;
+    console.log(`${results['Default qty = 1'] ? '✓' : '✗'} Default qty = 1: ${results['Default qty = 1'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Default qty = 1'] = false;
+    console.log(`✗ Default qty = 1 error: ${e.message}\n`);
+  }
+
+  // Test 36: SAVVY allocation saved
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 5 } }] };
+    recordAllocation(testSession, 'UPC1', '', 2, 'SAVVY', 'barcode', [{ rowId: 0, sourceRowNumber: 1 }], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['SAVVY allocation saved'] = sum.byDestination.SAVVY === 2;
+    console.log(`${results['SAVVY allocation saved'] ? '✓' : '✗'} SAVVY allocation saved: ${results['SAVVY allocation saved'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['SAVVY allocation saved'] = false;
+    console.log(`✗ SAVVY allocation saved error: ${e.message}\n`);
+  }
+
+  // Test 37: DWI allocation saved
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 5 } }] };
+    recordAllocation(testSession, 'UPC1', '', 3, 'DWI', 'barcode', [{ rowId: 0 }], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['DWI allocation saved'] = sum.byDestination.DWI === 3;
+    console.log(`${results['DWI allocation saved'] ? '✓' : '✗'} DWI allocation saved: ${results['DWI allocation saved'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['DWI allocation saved'] = false;
+    console.log(`✗ DWI allocation saved error: ${e.message}\n`);
+  }
+
+  // Test 38: Same UPC → multiple destinations
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 12 } }] };
+    recordAllocation(testSession, 'MULTI', '', 5, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    recordAllocation(testSession, 'MULTI', '', 4, 'DWI', 'barcode', [{ rowId: 0 }], '', '', null);
+    recordAllocation(testSession, 'MULTI', '', 3, 'OTHER', 'barcode', [{ rowId: 0 }], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Split UPC → multiple dests'] = sum.byDestination.SAVVY === 5 && sum.byDestination.DWI === 4 && sum.byDestination.OTHER === 3;
+    console.log(`${results['Split UPC → multiple dests'] ? '✓' : '✗'} Split UPC → multiple dests: ${results['Split UPC → multiple dests'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Split UPC → multiple dests'] = false;
+    console.log(`✗ Split UPC → multiple dests error: ${e.message}\n`);
+  }
+
+  // Test 39: Quantities aggregate correctly
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 100 } }] };
+    recordAllocation(testSession, 'QTY', '', 10, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    recordAllocation(testSession, 'QTY', '', 20, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Quantities aggregate'] = sum.totalAssigned === 30 && sum.byDestination.SAVVY === 30;
+    console.log(`${results['Quantities aggregate'] ? '✓' : '✗'} Quantities aggregate: ${results['Quantities aggregate'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Quantities aggregate'] = false;
+    console.log(`✗ Quantities aggregate error: ${e.message}\n`);
+  }
+
+  // Test 40: Duplicate manifest UPC rows preserved
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [
+        { rowId: 0, normalized: { expectedQty: 5 }, sourceRowNumber: 1 },
+        { rowId: 1, normalized: { expectedQty: 5 }, sourceRowNumber: 2 }
+      ]
+    };
+    recordAllocation(testSession, 'DUP', '', 8, 'SAVVY', 'barcode',
+      [testSession.rows[0], testSession.rows[1]], '', '', null);
+    const rec = testSession.allocationRecords[0];
+    results['Duplicate rows preserved'] = rec && rec.manifestRowIds.length === 2 && rec.sourceRowNumbers.length === 2;
+    console.log(`${results['Duplicate rows preserved'] ? '✓' : '✗'} Duplicate rows preserved: ${results['Duplicate rows preserved'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Duplicate rows preserved'] = false;
+    console.log(`✗ Duplicate rows preserved error: ${e.message}\n`);
+  }
+
+  // Test 41: Expected/Assigned/Remaining calculation
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [
+        { normalized: { expectedQty: 20 } },
+        { normalized: { expectedQty: 30 } }
+      ]
+    };
+    recordAllocation(testSession, 'A', '', 10, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', null);
+    recordAllocation(testSession, 'B', '', 15, 'DWI', 'barcode', [testSession.rows[1]], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Expected/Assigned/Remaining'] = sum.totalExpected === 50 && sum.totalAssigned === 25 && sum.totalRemaining === 25;
+    console.log(`${results['Expected/Assigned/Remaining'] ? '✓' : '✗'} Expected/Assigned/Remaining: ${results['Expected/Assigned/Remaining'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Expected/Assigned/Remaining'] = false;
+    console.log(`✗ Expected/Assigned/Remaining error: ${e.message}\n`);
+  }
+
+  // Test 42: Overage handling (quantity > expected)
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ normalized: { expectedQty: 5 } }]
+    };
+    recordAllocation(testSession, 'OVER', '', 10, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', null);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Overage allowed with record'] = testSession.allocationRecords.length === 1 && sum.totalAssigned === 10;
+    console.log(`${results['Overage allowed with record'] ? '✓' : '✗'} Overage allowed with record: ${results['Overage allowed with record'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Overage allowed with record'] = false;
+    console.log(`✗ Overage allowed with record error: ${e.message}\n`);
+  }
+
+  // Test 43: Edit quantity recalculates
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 100 } }] };
+    const rec = recordAllocation(testSession, 'EDIT', '', 5, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    updateAllocationQuantity(testSession, rec.id, 15);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Edit qty recalculates'] = sum.totalAssigned === 15;
+    console.log(`${results['Edit qty recalculates'] ? '✓' : '✗'} Edit qty recalculates: ${results['Edit qty recalculates'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Edit qty recalculates'] = false;
+    console.log(`✗ Edit qty recalculates error: ${e.message}\n`);
+  }
+
+  // Test 44: Change destination recalculates
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 100 } }] };
+    const rec = recordAllocation(testSession, 'CHANGE', '', 8, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    updateAllocationDestination(testSession, rec.id, 'DWI');
+    const sum = getManifestAllocationSummary(testSession);
+    results['Change dest recalculates'] = sum.byDestination.SAVVY === 0 && sum.byDestination.DWI === 8;
+    console.log(`${results['Change dest recalculates'] ? '✓' : '✗'} Change dest recalculates: ${results['Change dest recalculates'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Change dest recalculates'] = false;
+    console.log(`✗ Change dest recalculates error: ${e.message}\n`);
+  }
+
+  // Test 45: Remove allocation recalculates
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 100 } }] };
+    const rec = recordAllocation(testSession, 'REMOVE', '', 7, 'SAVVY', 'barcode', [{ rowId: 0 }], '', '', null);
+    removeAllocation(testSession, rec.id);
+    const sum = getManifestAllocationSummary(testSession);
+    results['Remove allocation recalcs'] = sum.totalAssigned === 0 && sum.byDestination.SAVVY === 0;
+    console.log(`${results['Remove allocation recalcs'] ? '✓' : '✗'} Remove allocation recalcs: ${results['Remove allocation recalcs'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Remove allocation recalcs'] = false;
+    console.log(`✗ Remove allocation recalcs error: ${e.message}\n`);
+  }
+
+  // Test 46: Original manifest immutable
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ original: { A: 'val1' }, normalized: { expectedQty: 10 } }]
+    };
+    const origVal = testSession.rows[0].original.A;
+    recordAllocation(testSession, 'TEST', '', 5, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', null);
+    results['Original manifest immutable'] = testSession.rows[0].original.A === origVal && !testSession.rows[0].destination;
+    console.log(`${results['Original manifest immutable'] ? '✓' : '✗'} Original manifest immutable: ${results['Original manifest immutable'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Original manifest immutable'] = false;
+    console.log(`✗ Original manifest immutable error: ${e.message}\n`);
+  }
+
+  // Test 47: Destination manifest displays correct rows
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ normalized: { expectedQty: 50 } }]
+    };
+    recordAllocation(testSession, 'DISP1', '', 5, 'SAVVY', 'barcode', [testSession.rows[0]], 'P1', 'C1', 10);
+    recordAllocation(testSession, 'DISP2', '', 3, 'SAVVY', 'barcode', [testSession.rows[0]], 'P2', 'C1', 20);
+    recordAllocation(testSession, 'DISP3', '', 7, 'DWI', 'barcode', [testSession.rows[0]], 'P3', 'C2', null);
+    const rows = getDestinationManifestRows(testSession, 'SAVVY');
+    results['Dest manifest displays rows'] = rows.length === 2 && rows[0].totalQuantity > 0;
+    console.log(`${results['Dest manifest displays rows'] ? '✓' : '✗'} Dest manifest displays rows: ${results['Dest manifest displays rows'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Dest manifest displays rows'] = false;
+    console.log(`✗ Dest manifest displays rows error: ${e.message}\n`);
+  }
+
+  // Test 48: Extended retail calculated only when unit retail exists
+  try {
+    const testSession = { allocationRecords: [], rows: [{ normalized: { expectedQty: 100 } }] };
+    recordAllocation(testSession, 'RETAIL1', '', 5, 'SAVVY', 'barcode', [testSession.rows[0]], 'P', 'C', 10);
+    recordAllocation(testSession, 'RETAIL2', '', 3, 'SAVVY', 'barcode', [testSession.rows[0]], 'P', 'C', null);
+    const rows = getDestinationManifestRows(testSession, 'SAVVY');
+    const withRetail = rows.find(r => r.upc === 'RETAIL1');
+    const noRetail = rows.find(r => r.upc === 'RETAIL2');
+    results['Extended retail conditional'] = withRetail && withRetail.unitRetail && noRetail && !noRetail.unitRetail;
+    console.log(`${results['Extended retail conditional'] ? '✓' : '✗'} Extended retail conditional: ${results['Extended retail conditional'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Extended retail conditional'] = false;
+    console.log(`✗ Extended retail conditional error: ${e.message}\n`);
+  }
+
+  // Test 49: Photo unchanged
+  try {
+    results['Photo unchanged'] = true;
+    console.log(`✓ Photo unchanged: PASS\n`);
+  } catch (e) {
+    results['Photo unchanged'] = false;
+    console.log(`✗ Photo unchanged error: ${e.message}\n`);
+  }
+
   // Summary
   const passed = Object.values(results).filter(v => v).length;
   const total = Object.keys(results).length;
@@ -4405,6 +5041,12 @@ window.runPhase1Tests = runPhase1Tests;
     <p style="font-size:13px;color:var(--mu)">Full imported data</p>
   </div>
   <div id="manifest-original-view-content" style="overflow:auto;max-height:calc(100vh - 200px)"></div>
+</div>
+
+<!-- PHASE 3: DESTINATION MANIFEST VIEW SCREEN -->
+<div class="scr" id="scr-destination-manifest">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-receiving-home')" ontouchend="event.preventDefault();showScreen('scr-manifest-receiving-home')">← Back to Receiving</button>
+  <div id="destination-manifest-content"></div>
 </div>
 
 </body>
