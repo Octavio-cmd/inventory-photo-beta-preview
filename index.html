@@ -2054,54 +2054,177 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     ebayImage: '',
     dataSource: '',
     identificationMethod: '',
+    identificationMethods: [],
     destination: '',
     manifestFile: '',
     sourceRowNumbers: [],
+    createdAt: '',
+    updatedAt: '',
     timestamp: '',
     notes: ''
   };
 
   if (!allocationGroup) return row;
 
-  // Set destination
   row.destination = allocationGroup.destination || '';
   row.qty = allocationGroup.totalQuantity || 0;
-  row.upc = allocationGroup.upc || '';
+  row.upc = String(allocationGroup.upc || '');
   row.sku = allocationGroup.sku || '';
-  row.identificationMethod = allocationGroup.identificationMethod || 'barcode';
-  row.timestamp = new Date().toISOString();
+  row.ropa = allocationGroup.ropa || '';
+  row.notes = allocationGroup.notes || '';
 
-  // Set from allocation group data
-  if (allocationGroup.title) {
-    row.description = allocationGroup.title;
-    row.dataSource = row.dataSource || 'MANIFEST';
-  }
-  if (allocationGroup.category) {
-    row.category = allocationGroup.category;
-    row.manifestCategory = allocationGroup.category;
-  }
-  if (allocationGroup.unitRetail !== null && typeof allocationGroup.unitRetail === 'number') {
-    row.retail = allocationGroup.unitRetail;
-    row.manifestRetail = allocationGroup.unitRetail;
-    row.dataSource = 'MANIFEST';
-    if (row.qty && typeof row.qty === 'number') {
-      row.extendedRetail = row.qty * row.retail;
-      row.manifestExtendedRetail = row.extendedRetail;
-    }
-  }
-
-  // Collect source row numbers from records
+  // Collect source row numbers and identification methods from records
+  const sourceRows = new Set();
+  const identMethods = new Set();
   if (allocationGroup.records && Array.isArray(allocationGroup.records)) {
-    const sourceRows = new Set();
     allocationGroup.records.forEach(rec => {
       if (rec.sourceRowNumbers && Array.isArray(rec.sourceRowNumbers)) {
         rec.sourceRowNumbers.forEach(sn => sourceRows.add(sn));
       }
+      if (rec.identificationMethod) {
+        identMethods.add(rec.identificationMethod);
+      }
     });
-    row.sourceRowNumbers = Array.from(sourceRows).sort((a, b) => a - b);
+  }
+  row.sourceRowNumbers = Array.from(sourceRows).sort((a, b) => a - b);
+  row.identificationMethods = Array.from(identMethods);
+  row.identificationMethod = row.identificationMethods.length === 1 ? row.identificationMethods[0] : 'mixed';
+
+  // Use manifest context to populate manifest-sourced fields
+  let hasManifestData = false;
+  let hasEbayData = false;
+
+  if (manifestContext && manifestContext.manifestSession && manifestContext.manifestSession.rows) {
+    const normalizedUpc = normalizeManifestIdentifier(row.upc);
+    const manifestRows = manifestContext.manifestSession.rows.filter(r =>
+      r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc
+    );
+
+    if (manifestRows.length > 0) {
+      hasManifestData = true;
+      const firstManifestRow = manifestRows[0];
+
+      if (firstManifestRow.normalized.sku && !row.sku) {
+        row.sku = firstManifestRow.normalized.sku;
+      }
+      if (firstManifestRow.normalized.description) {
+        row.manifestDescription = firstManifestRow.normalized.description;
+      }
+      if (firstManifestRow.normalized.expectedQty !== null && typeof firstManifestRow.normalized.expectedQty === 'number') {
+        row.manifestQty = firstManifestRow.normalized.expectedQty;
+      }
+      if (firstManifestRow.normalized.unitRetail !== null && typeof firstManifestRow.normalized.unitRetail === 'number') {
+        row.manifestRetail = firstManifestRow.normalized.unitRetail;
+      }
+      if (firstManifestRow.normalized.category) {
+        row.manifestCategory = firstManifestRow.normalized.category;
+      }
+      if (firstManifestRow.normalized.palletId) {
+        row.manifestPalletId = firstManifestRow.normalized.palletId;
+      }
+      if (manifestContext.manifestSession.fileName) {
+        row.manifestFile = manifestContext.manifestSession.fileName;
+      }
+    }
   }
 
-  // Preserve manifest expected quantity separately
+  // Description priority: 1. manifest description, 2. eBay title, 3. allocation title, 4. blank
+  if (row.manifestDescription) {
+    row.description = row.manifestDescription;
+  } else if (allocationGroup.ebayTitle) {
+    row.description = allocationGroup.ebayTitle;
+    hasEbayData = true;
+  } else if (allocationGroup.title) {
+    row.description = allocationGroup.title;
+  }
+
+  // SKU priority: 1. manifest SKU (already set above), 2. allocation SKU (fallback if not in manifest), 3. blank
+  if (!row.sku && allocationGroup.sku) {
+    row.sku = allocationGroup.sku;
+  }
+
+  // Retail priority: 1. manifest retail, 2. eBay reference price (if exists), 3. null
+  if (row.manifestRetail !== null && typeof row.manifestRetail === 'number') {
+    row.retail = row.manifestRetail;
+  } else if (allocationGroup.ebayReferencePrice !== null && typeof allocationGroup.ebayReferencePrice === 'number') {
+    row.retail = allocationGroup.ebayReferencePrice;
+    hasEbayData = true;
+  } else if (allocationGroup.unitRetail !== null && typeof allocationGroup.unitRetail === 'number') {
+    row.retail = allocationGroup.unitRetail;
+  }
+
+  // Extended retail calculation
+  if (row.retail !== null && typeof row.retail === 'number' && row.qty && typeof row.qty === 'number') {
+    row.extendedRetail = row.qty * row.retail;
+  }
+
+  // Populate manifest extended retail if manifest retail exists
+  if (row.manifestRetail !== null && typeof row.manifestRetail === 'number' && row.manifestQty && typeof row.manifestQty === 'number') {
+    row.manifestExtendedRetail = row.manifestQty * row.manifestRetail;
+  }
+
+  // eBay fields (preserve raw values without inferring)
+  if (allocationGroup.ebayTitle) {
+    row.ebayTitle = allocationGroup.ebayTitle;
+    hasEbayData = true;
+  }
+  if (allocationGroup.ebayLow !== null && typeof allocationGroup.ebayLow === 'number') {
+    row.ebayLow = allocationGroup.ebayLow;
+    hasEbayData = true;
+  }
+  if (allocationGroup.ebayAverage !== null && typeof allocationGroup.ebayAverage === 'number') {
+    row.ebayAverage = allocationGroup.ebayAverage;
+    hasEbayData = true;
+  }
+  if (allocationGroup.ebayHigh !== null && typeof allocationGroup.ebayHigh === 'number') {
+    row.ebayHigh = allocationGroup.ebayHigh;
+    hasEbayData = true;
+  }
+  if (allocationGroup.ebayMatches && typeof allocationGroup.ebayMatches === 'number') {
+    row.ebayMatches = allocationGroup.ebayMatches;
+  }
+  if (allocationGroup.ebayItemId) {
+    row.ebayItemId = allocationGroup.ebayItemId;
+    hasEbayData = true;
+  }
+  if (allocationGroup.ebayImage) {
+    row.ebayImage = allocationGroup.ebayImage;
+    hasEbayData = true;
+  }
+
+  // Category fallback
+  if (!row.category && allocationGroup.category) {
+    row.category = allocationGroup.category;
+  }
+
+  // Explicit dataSource detection
+  if (hasManifestData && hasEbayData) {
+    row.dataSource = 'BOTH';
+  } else if (hasManifestData) {
+    row.dataSource = 'MANIFEST';
+  } else if (hasEbayData) {
+    row.dataSource = 'EBAY';
+  } else {
+    row.dataSource = 'MANUAL';
+  }
+
+  // Timestamp from allocation record (use earliest/latest from records)
+  if (allocationGroup.records && Array.isArray(allocationGroup.records) && allocationGroup.records.length > 0) {
+    const timestamps = allocationGroup.records
+      .map(r => r.timestamp)
+      .filter(t => t);
+    if (timestamps.length > 0) {
+      const sorted = timestamps.sort();
+      row.createdAt = sorted[0];
+      row.updatedAt = sorted[sorted.length - 1];
+      row.timestamp = row.updatedAt;
+    }
+  }
+  if (!row.timestamp) {
+    row.timestamp = new Date().toISOString();
+  }
+
+  // Preserve expected quantity separately (from first record if available)
   if (allocationGroup.records && allocationGroup.records.length > 0) {
     const firstRec = allocationGroup.records[0];
     if (firstRec.expectedQtyAtAllocation !== null && typeof firstRec.expectedQtyAtAllocation === 'number') {
@@ -2116,7 +2239,9 @@ function getDestinationOutputRows(manifestSession, destination) {
   if (!manifestSession || !manifestSession.allocationRecords) return [];
 
   const rows = getDestinationManifestRows(manifestSession, destination);
-  return rows.map(row => buildDestinationOutputRow(row, { manifestSession }));
+  return rows.map(row => buildDestinationOutputRow(row, {
+    manifestSession: manifestSession
+  }));
 }
 
 function restoreDefaultOutputColumns(session) {
@@ -3729,12 +3854,33 @@ function getDestinationManifestRows(manifestSession, destination) {
         title: record.title,
         category: record.category,
         unitRetail: record.unitRetail,
+        ropa: record.ropa || '',
+        ebayTitle: record.ebayTitle || '',
+        ebayLow: record.ebayLow || null,
+        ebayAverage: record.ebayAverage || null,
+        ebayHigh: record.ebayHigh || null,
+        ebayMatches: record.ebayMatches || 0,
+        ebayItemId: record.ebayItemId || '',
+        ebayImage: record.ebayImage || '',
+        ebayReferencePrice: record.ebayReferencePrice || null,
+        destination: destination,
         totalQuantity: 0,
-        records: []
+        records: [],
+        identificationMethods: new Set()
       };
     }
     byUpc[key].totalQuantity += record.quantity;
     byUpc[key].records.push(record);
+    if (record.identificationMethod) {
+      byUpc[key].identificationMethods.add(record.identificationMethod);
+    }
+  });
+
+  // Convert Sets to arrays and aggregate identificationMethod
+  Object.values(byUpc).forEach(group => {
+    const methods = Array.from(group.identificationMethods);
+    group.identificationMethod = methods.length === 1 ? methods[0] : 'mixed';
+    delete group.identificationMethods;
   });
 
   return Object.values(byUpc);
@@ -3748,8 +3894,13 @@ function showDestinationManifest(destination) {
 
 function renderDestinationManifest(destination) {
   const container = $('destination-manifest-content');
-  if (!container) return;
+  if (!container || !manifestSession) return;
 
+  // Store current destination globally for navigation/UI state
+  window._currentDestination = destination;
+
+  ensureOutputConfig(manifestSession);
+  const config = manifestSession.outputConfig;
   const rows = getDestinationManifestRows(manifestSession, destination);
   const summary = getManifestAllocationSummary(manifestSession);
   const destQty = summary.byDestination[destination] || 0;
@@ -3765,81 +3916,59 @@ function renderDestinationManifest(destination) {
     html += '<p style="font-size:14px;color:var(--mu)">No items allocated to ' + escapeHtml(destination) + '</p>';
     html += '</div>';
   } else {
-    rows.forEach((row, idx) => {
-      const extRetail = (row.unitRetail && row.totalQuantity)
-        ? (row.unitRetail * row.totalQuantity).toFixed(2)
-        : null;
+    const enabledCols = config.columns.filter(c => c.enabled).sort((a, b) => a.order - b.order);
 
-      html += '<div style="background:var(--sf);border-radius:16px;padding:16px;margin-bottom:12px">';
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;font-size:13px">';
+    // Build output rows using buildDestinationOutputRow
+    const outputRows = rows.map(row => buildDestinationOutputRow(row, { manifestSession: manifestSession }));
 
-      html += '<div>';
-      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">UPC</div>';
-      html += '<div style="font-weight:700;font-family:monospace">' + escapeHtml(row.upc) + '</div>';
-      html += '</div>';
+    html += '<div style="overflow-x:auto;margin-bottom:20px;border-radius:12px;border:1px solid var(--bd)">';
+    html += '<table style="width:100%;border-collapse:collapse;background:var(--sf)">';
 
-      if (row.sku) {
-        html += '<div>';
-        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">SKU</div>';
-        html += '<div style="font-weight:700">' + escapeHtml(row.sku) + '</div>';
-        html += '</div>';
-      }
-
-      html += '<div style="grid-column:1/-1">';
-      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Description</div>';
-      html += '<div style="font-weight:700">' + escapeHtml(row.title) + '</div>';
-      html += '</div>';
-
-      if (row.category) {
-        html += '<div>';
-        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Category</div>';
-        html += '<div style="font-weight:700">' + escapeHtml(row.category) + '</div>';
-        html += '</div>';
-      }
-
-      html += '<div>';
-      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Qty Assigned</div>';
-      html += '<div style="font-weight:700;color:var(--sv)">' + row.totalQuantity + '</div>';
-      html += '</div>';
-
-      if (row.unitRetail) {
-        html += '<div>';
-        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Unit Retail</div>';
-        html += '<div style="font-weight:700">$' + row.unitRetail.toFixed(2) + '</div>';
-        html += '</div>';
-      }
-
-      if (extRetail) {
-        html += '<div>';
-        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Extended Retail</div>';
-        html += '<div style="font-weight:700;color:var(--gd)">$' + escapeHtml(extRetail) + '</div>';
-        html += '</div>';
-      }
-
-      if (row.records.length > 1 || row.records[0].sourceRowNumbers?.length > 1) {
-        html += '<div style="grid-column:1/-1">';
-        html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Source Rows</div>';
-        html += '<div style="font-weight:700;font-family:monospace;font-size:12px">';
-        const srcRows = new Set();
-        row.records.forEach(r => {
-          r.sourceRowNumbers?.forEach(sn => srcRows.add(sn));
-        });
-        html += Array.from(srcRows).join(', ');
-        html += '</div>';
-        html += '</div>';
-      }
-
-      html += '</div>';
-
-      // Edit/Remove/Change Destination buttons for each UPC
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">';
-      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:13px;padding:10px" onclick="editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">✏️ Edit</button>';
-      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:13px;padding:10px" onclick="changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🎯 Change Dest</button>';
-      html += '<button class="btn red" style="margin-bottom:0;font-size:13px;padding:10px" onclick="removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🗑️ Remove</button>';
-      html += '</div>';
-
-      html += '</div>';
+    // Header
+    html += '<thead><tr style="background:var(--sf2);border-bottom:1px solid var(--bd)">';
+    enabledCols.forEach(col => {
+      html += '<th style="padding:12px;text-align:left;font-weight:800;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap">' + escapeHtml(col.label) + '</th>';
     });
+    html += '<th style="padding:12px;text-align:left;font-weight:800;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap">ACTIONS</th>';
+    html += '</tr></thead>';
+
+    // Body
+    html += '<tbody>';
+    outputRows.forEach((row, idx) => {
+      html += '<tr style="border-bottom:1px solid var(--bd);' + (idx % 2 === 1 ? 'background:rgba(255,255,255,.02)' : '') + '">';
+
+      enabledCols.forEach(col => {
+        const value = row[col.key];
+        let displayValue = '';
+
+        if (value === null || value === undefined || value === '') {
+          displayValue = '—';
+        } else if (col.key === 'retail' || col.key === 'extendedRetail') {
+          displayValue = typeof value === 'number' ? '$' + value.toFixed(2) : '—';
+        } else if (col.key === 'upc') {
+          displayValue = '<code style="font-family:monospace;font-size:12px">' + escapeHtml(String(value)) + '</code>';
+        } else {
+          displayValue = escapeHtml(String(value));
+        }
+
+        html += '<td style="padding:12px;font-size:13px;border-right:1px solid var(--bd)">' + displayValue + '</td>';
+      });
+
+      // Actions column
+      html += '<td style="padding:12px;font-size:13px">';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">✏️</button>';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🎯</button>';
+      html += '<button class="btn red" style="margin-bottom:0;font-size:11px;padding:6px 8px" onclick="removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🗑️</button>';
+      html += '</div>';
+      html += '</td>';
+
+      html += '</tr>';
+    });
+    html += '</tbody>';
+
+    html += '</table>';
+    html += '</div>';
   }
 
   container.innerHTML = html;
@@ -4015,6 +4144,205 @@ function goBackToReceiving() {
 // Try another UPC
 function tryAnotherUpc() {
   showScreen('scr-manifest-receiving-home');
+}
+
+// ========== PHASE 4: OUTPUT COLUMNS CONFIGURATION ==========
+
+function showOutputColumnsConfig() {
+  renderOutputColumnsConfig();
+  showScreen('scr-output-columns-config');
+}
+
+function backFromOutputConfig() {
+  if (window._currentDestination) {
+    renderDestinationManifest(window._currentDestination);
+    showScreen('scr-destination-manifest');
+  } else {
+    showScreen('scr-manifest-receiving-home');
+  }
+}
+
+function renderOutputColumnsConfig() {
+  const container = $('output-columns-config-content');
+  if (!container || !manifestSession) return;
+
+  ensureOutputConfig(manifestSession);
+  const config = manifestSession.outputConfig.columns;
+
+  let html = '';
+  const sortedByOrder = [...config].sort((a, b) => a.order - b.order);
+
+  sortedByOrder.forEach((col, idx) => {
+    const isFirst = idx === 0;
+    const isLast = idx === sortedByOrder.length - 1;
+
+    html += '<div style="background:var(--sf);border-radius:12px;padding:14px;margin-bottom:10px;border-left:4px solid ' + (col.enabled ? 'var(--sv)' : 'var(--bd)') + '">';
+    html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+
+    // Canonical key (read-only)
+    html += '<div style="flex:1">';
+    html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Canonical Key</div>';
+    html += '<div style="font-weight:700;font-family:monospace;font-size:13px">' + escapeHtml(col.key) + '</div>';
+    html += '</div>';
+
+    // Enabled toggle
+    html += '<div>';
+    html += '<input type="checkbox" id="col-enabled-' + col.key + '" ' + (col.enabled ? 'checked' : '') + ' onchange="toggleOutputColumn(\'' + col.key + '\', this.checked)" style="width:20px;height:20px;cursor:pointer">';
+    html += '</div>';
+
+    html += '</div>';
+
+    // Label editor
+    html += '<div style="margin-bottom:10px">';
+    html += '<label for="col-label-' + col.key + '" style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px">Visible Label</label>';
+    html += '<input type="text" id="col-label-' + col.key + '" value="' + escapeHtml(col.label) + '" onchange="updateOutputColumnLabel(\'' + col.key + '\', this.value)" style="width:100%;padding:10px;background:var(--sf2);border:1px solid var(--bd);border-radius:8px;color:var(--tx);box-sizing:border-box">';
+    html += '</div>';
+
+    // Move buttons
+    html += '<div style="display:flex;gap:6px">';
+    if (!isFirst) {
+      html += '<button class="btn sec" style="flex:1;margin-bottom:0;padding:8px;font-size:12px" onclick="moveOutputColumn(\'' + col.key + '\', \'up\')">⬆️ Move Up</button>';
+    }
+    if (!isLast) {
+      html += '<button class="btn sec" style="flex:1;margin-bottom:0;padding:8px;font-size:12px" onclick="moveOutputColumn(\'' + col.key + '\', \'down\')">⬇️ Move Down</button>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+  });
+
+  container.innerHTML = html;
+}
+
+function updateOutputColumnLabel(key, newLabel) {
+  if (!manifestSession || !manifestSession.outputConfig) return;
+  const col = manifestSession.outputConfig.columns.find(c => c.key === key);
+  if (col) {
+    col.label = newLabel || key;
+    saveManifestSessionToStorageV3(manifestSession);
+    renderOutputColumnsConfig();
+    toast('✅ Label updated');
+  }
+}
+
+function toggleOutputColumn(key, enabled) {
+  if (!manifestSession || !manifestSession.outputConfig) return;
+  const col = manifestSession.outputConfig.columns.find(c => c.key === key);
+  if (col) {
+    col.enabled = enabled;
+    const enabledCount = manifestSession.outputConfig.columns.filter(c => c.enabled).length;
+    if (enabledCount === 0) {
+      col.enabled = true;
+      toast('⚠️ At least one column must be enabled');
+    } else {
+      saveManifestSessionToStorageV3(manifestSession);
+      toast(enabled ? '✅ Column enabled' : '✅ Column disabled');
+    }
+    renderOutputColumnsConfig();
+  }
+}
+
+function moveOutputColumn(key, direction) {
+  if (!manifestSession || !manifestSession.outputConfig) return;
+  const columns = manifestSession.outputConfig.columns;
+  const idx = columns.findIndex(c => c.key === key);
+  if (idx === -1) return;
+
+  const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (newIdx < 0 || newIdx >= columns.length) return;
+
+  const oldOrder = columns[idx].order;
+  columns[idx].order = columns[newIdx].order;
+  columns[newIdx].order = oldOrder;
+
+  saveManifestSessionToStorageV3(manifestSession);
+  renderOutputColumnsConfig();
+  toast('✅ Reordered');
+}
+
+function restoreDefaultOutputColumnsConfirm() {
+  if (confirm('Restore output columns to defaults? This will reset all customizations.')) {
+    restoreDefaultOutputColumns(manifestSession);
+    toast('✅ Defaults restored');
+    renderOutputColumnsConfig();
+  }
+}
+
+function showOutputPreview(destination) {
+  if (!destination || !manifestSession) return;
+  window._currentDestination = destination;
+  renderOutputPreview(destination);
+  showScreen('scr-output-preview');
+}
+
+function backFromOutputPreview() {
+  if (window._currentDestination) {
+    showScreen('scr-destination-manifest');
+  } else {
+    showScreen('scr-manifest-receiving-home');
+  }
+}
+
+function renderOutputPreview(destination) {
+  const container = $('output-preview-content');
+  if (!container || !manifestSession) return;
+
+  ensureOutputConfig(manifestSession);
+  const config = manifestSession.outputConfig;
+  const outputRows = getDestinationOutputRows(manifestSession, destination);
+
+  let html = '<div style="margin-bottom:20px">';
+  html += '<h2 style="font-size:18px;font-weight:800;margin-bottom:6px">' + escapeHtml(destination) + ' OUTPUT PREVIEW</h2>';
+  html += '<p style="font-size:13px;color:var(--mu)">This is exactly what will be exported</p>';
+  html += '</div>';
+
+  if (outputRows.length === 0) {
+    html += '<div style="background:var(--sf);border-radius:16px;padding:20px;text-align:center">';
+    html += '<div style="font-size:48px;margin-bottom:12px">📭</div>';
+    html += '<p style="font-size:14px;color:var(--mu)">No items to preview</p>';
+    html += '</div>';
+  } else {
+    const enabledCols = config.columns.filter(c => c.enabled).sort((a, b) => a.order - b.order);
+
+    html += '<div style="overflow-x:auto;border-radius:12px;border:1px solid var(--bd)">';
+    html += '<table style="width:100%;border-collapse:collapse;background:var(--sf)">';
+
+    // Header
+    html += '<thead><tr style="background:var(--sf2);border-bottom:1px solid var(--bd)">';
+    enabledCols.forEach(col => {
+      html += '<th style="padding:12px;text-align:left;font-weight:800;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap">' + escapeHtml(col.label) + '</th>';
+    });
+    html += '</tr></thead>';
+
+    // Body
+    html += '<tbody>';
+    outputRows.forEach((row, idx) => {
+      html += '<tr style="border-bottom:1px solid var(--bd);' + (idx % 2 === 1 ? 'background:rgba(255,255,255,.02)' : '') + '">';
+      enabledCols.forEach(col => {
+        const value = row[col.key];
+        let displayValue = '';
+
+        if (value === null || value === undefined || value === '') {
+          displayValue = '—';
+        } else if (col.key === 'retail' || col.key === 'extendedRetail') {
+          displayValue = typeof value === 'number' ? '$' + value.toFixed(2) : displayValue;
+        } else if (col.key === 'upc') {
+          displayValue = '<code style="font-family:monospace;font-size:12px">' + escapeHtml(String(value)) + '</code>';
+        } else {
+          displayValue = escapeHtml(String(value));
+        }
+
+        html += '<td style="padding:12px;font-size:13px;border-right:1px solid var(--bd)">' + displayValue + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody>';
+
+    html += '</table>';
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
 }
 
 // ========== PHASE 2: TESTS ==========
@@ -5121,8 +5449,348 @@ async function runPhase1Tests() {
   return passed === total;
 }
 
-// Add test runner to window for manual testing
+// ========== PHASE 4: CONFIGURABLE OUTPUT MODEL TESTS ==========
+function runPhase4Tests() {
+  const results = {};
+
+  // Test 1: Default visible columns exactly match spec
+  try {
+    const testSession = { outputConfig: undefined };
+    ensureOutputConfig(testSession);
+    const cols = testSession.outputConfig.columns.filter(c => c.enabled).sort((a, b) => a.order - b.order);
+    const labels = cols.map(c => c.label).join(',');
+    const expected = 'SKU,UPC,DISCRIPCTION,QTY,RETAIL,EXT. RETAIL,ROPA';
+    results['default visible columns exact'] = labels === expected;
+    console.log(`${results['default visible columns exact'] ? '✓' : '✗'} Default columns: ${labels}\n`);
+  } catch (e) {
+    results['default visible columns exact'] = false;
+    console.log(`✗ Default columns error: ${e.message}\n`);
+  }
+
+  // Test 2: Canonical keys independent from labels
+  try {
+    const testSession = { outputConfig: undefined };
+    ensureOutputConfig(testSession);
+    const descCol = testSession.outputConfig.columns.find(c => c.key === 'description');
+    results['canonical key independent'] = descCol && descCol.key === 'description' && descCol.label === 'DISCRIPCTION';
+    console.log(`${results['canonical key independent'] ? '✓' : '✗'} Canonical independent: ${results['canonical key independent']}\n`);
+  } catch (e) {
+    results['canonical key independent'] = false;
+    console.log(`✗ Canonical independent error: ${e.message}\n`);
+  }
+
+  // Test 3: Rename column label
+  try {
+    const testSession = { outputConfig: undefined, allocationRecords: [], rows: [] };
+    ensureOutputConfig(testSession);
+    const descCol = testSession.outputConfig.columns.find(c => c.key === 'description');
+    descCol.label = 'PRODUCT DESCRIPTION';
+    results['rename label'] = descCol.label === 'PRODUCT DESCRIPTION' && descCol.key === 'description';
+    console.log(`${results['rename label'] ? '✓' : '✗'} Rename label: ${results['rename label']}\n`);
+  } catch (e) {
+    results['rename label'] = false;
+    console.log(`✗ Rename label error: ${e.message}\n`);
+  }
+
+  // Test 4: Disable column hides only visible
+  try {
+    const testSession = { outputConfig: undefined };
+    ensureOutputConfig(testSession);
+    const ropaCol = testSession.outputConfig.columns.find(c => c.key === 'ropa');
+    ropaCol.enabled = false;
+    const visibleCount = testSession.outputConfig.columns.filter(c => c.enabled).length;
+    results['disable column'] = visibleCount === 6 && !ropaCol.enabled;
+    console.log(`${results['disable column'] ? '✓' : '✗'} Disable column: visible=${visibleCount}\n`);
+  } catch (e) {
+    results['disable column'] = false;
+    console.log(`✗ Disable column error: ${e.message}\n`);
+  }
+
+  // Test 5: Restore defaults
+  try {
+    const testSession = { outputConfig: undefined };
+    ensureOutputConfig(testSession);
+    testSession.outputConfig.columns[0].label = 'CHANGED';
+    restoreDefaultOutputColumns(testSession);
+    const skuCol = testSession.outputConfig.columns.find(c => c.key === 'sku');
+    results['restore defaults'] = skuCol.label === 'SKU' && testSession.outputConfig.columns.length === 7;
+    console.log(`${results['restore defaults'] ? '✓' : '✗'} Restore defaults: ${results['restore defaults']}\n`);
+  } catch (e) {
+    results['restore defaults'] = false;
+    console.log(`✗ Restore defaults error: ${e.message}\n`);
+  }
+
+  // Test 6: Manifest description wins canonical
+  try {
+    const testSession = { rows: [{ normalized: { upc: '001', description: 'Manifest Title', expectedQty: 10 } }], allocationRecords: [] };
+    const groupWithEbay = {
+      upc: '001',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode', ebayTitle: 'eBay Title' }],
+      ebayTitle: 'eBay Title'
+    };
+    const row = buildDestinationOutputRow(groupWithEbay, { manifestSession: testSession });
+    results['manifest description wins'] = row.description === 'Manifest Title';
+    console.log(`${results['manifest description wins'] ? '✓' : '✗'} Manifest description wins: ${row.description}\n`);
+  } catch (e) {
+    results['manifest description wins'] = false;
+    console.log(`✗ Manifest description error: ${e.message}\n`);
+  }
+
+  // Test 7: eBay title when no manifest
+  try {
+    const groupNoManifest = {
+      upc: '002',
+      totalQuantity: 3,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }],
+      ebayTitle: 'eBay Best Title'
+    };
+    const row = buildDestinationOutputRow(groupNoManifest, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['ebay title fallback'] = row.description === 'eBay Best Title';
+    console.log(`${results['ebay title fallback'] ? '✓' : '✗'} eBay title fallback: ${row.description}\n`);
+  } catch (e) {
+    results['ebay title fallback'] = false;
+    console.log(`✗ eBay fallback error: ${e.message}\n`);
+  }
+
+  // Test 8: SKU not invented
+  try {
+    const groupNoSku = {
+      upc: '003',
+      totalQuantity: 2,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(groupNoSku, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['sku not invented'] = row.sku === '';
+    console.log(`${results['sku not invented'] ? '✓' : '✗'} SKU not invented: '${row.sku}'\n`);
+  } catch (e) {
+    results['sku not invented'] = false;
+    console.log(`✗ SKU not invented error: ${e.message}\n`);
+  }
+
+  // Test 9: UPC leading zeros preserved
+  try {
+    const group = {
+      upc: '0019925262523',
+      totalQuantity: 1,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['upc leading zeros'] = row.upc === '0019925262523' && typeof row.upc === 'string';
+    console.log(`${results['upc leading zeros'] ? '✓' : '✗'} UPC leading zeros: ${row.upc}\n`);
+  } catch (e) {
+    results['upc leading zeros'] = false;
+    console.log(`✗ UPC leading zeros error: ${e.message}\n`);
+  }
+
+  // Test 10: QTY is destination assigned, not manifest
+  try {
+    const testSession = { rows: [{ normalized: { upc: '004', expectedQty: 100 } }], allocationRecords: [] };
+    const group = {
+      upc: '004',
+      totalQuantity: 15,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode', expectedQtyAtAllocation: 100 }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['qty destination assigned'] = row.qty === 15 && row.manifestQty === 100;
+    console.log(`${results['qty destination assigned'] ? '✓' : '✗'} QTY destination: ${row.qty}, manifest: ${row.manifestQty}\n`);
+  } catch (e) {
+    results['qty destination assigned'] = false;
+    console.log(`✗ QTY assigned error: ${e.message}\n`);
+  }
+
+  // Test 11: Manifest retail wins canonical
+  try {
+    const testSession = { rows: [{ normalized: { upc: '005', unitRetail: 29.99 } }], allocationRecords: [] };
+    const group = {
+      upc: '005',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }],
+      ebayReferencePrice: 19.99,
+      unitRetail: 29.99
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['manifest retail wins'] = row.retail === 29.99;
+    console.log(`${results['manifest retail wins'] ? '✓' : '✗'} Manifest retail wins: ${row.retail}\n`);
+  } catch (e) {
+    results['manifest retail wins'] = false;
+    console.log(`✗ Manifest retail error: ${e.message}\n`);
+  }
+
+  // Test 12: Extended retail calculation
+  try {
+    const group = {
+      upc: '006',
+      totalQuantity: 3,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }],
+      unitRetail: 10.00
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['extended retail calc'] = row.extendedRetail === 30.00;
+    console.log(`${results['extended retail calc'] ? '✓' : '✗'} Extended retail: ${row.extendedRetail}\n`);
+  } catch (e) {
+    results['extended retail calc'] = false;
+    console.log(`✗ Extended retail error: ${e.message}\n`);
+  }
+
+  // Test 13: Extended retail null when no retail
+  try {
+    const group = {
+      upc: '007',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['extended retail null'] = row.extendedRetail === null;
+    console.log(`${results['extended retail null'] ? '✓' : '✗'} Extended retail null: ${row.extendedRetail}\n`);
+  } catch (e) {
+    results['extended retail null'] = false;
+    console.log(`✗ Extended retail null error: ${e.message}\n`);
+  }
+
+  // Test 14: DataSource MANIFEST explicit
+  try {
+    const testSession = { rows: [{ normalized: { upc: '008', description: 'M Title', expectedQty: 50 } }], allocationRecords: [] };
+    const group = {
+      upc: '008',
+      totalQuantity: 10,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }],
+      title: 'M Title'
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['datasource manifest'] = row.dataSource === 'MANIFEST';
+    console.log(`${results['datasource manifest'] ? '✓' : '✗'} DataSource MANIFEST: ${row.dataSource}\n`);
+  } catch (e) {
+    results['datasource manifest'] = false;
+    console.log(`✗ DataSource MANIFEST error: ${e.message}\n`);
+  }
+
+  // Test 15: DataSource EBAY explicit
+  try {
+    const group = {
+      upc: '009',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }],
+      ebayTitle: 'Only eBay'
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['datasource ebay'] = row.dataSource === 'EBAY';
+    console.log(`${results['datasource ebay'] ? '✓' : '✗'} DataSource EBAY: ${row.dataSource}\n`);
+  } catch (e) {
+    results['datasource ebay'] = false;
+    console.log(`✗ DataSource EBAY error: ${e.message}\n`);
+  }
+
+  // Test 16: DataSource BOTH
+  try {
+    const testSession = { rows: [{ normalized: { upc: '010', description: 'M Title', expectedQty: 50 } }], allocationRecords: [] };
+    const group = {
+      upc: '010',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }],
+      title: 'M Title',
+      ebayTitle: 'E Title'
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['datasource both'] = row.dataSource === 'BOTH';
+    console.log(`${results['datasource both'] ? '✓' : '✗'} DataSource BOTH: ${row.dataSource}\n`);
+  } catch (e) {
+    results['datasource both'] = false;
+    console.log(`✗ DataSource BOTH error: ${e.message}\n`);
+  }
+
+  // Test 17: DataSource MANUAL
+  try {
+    const group = {
+      upc: '011',
+      totalQuantity: 3,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'manual_upc' }],
+      title: 'Manual Entry'
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['datasource manual'] = row.dataSource === 'MANUAL';
+    console.log(`${results['datasource manual'] ? '✓' : '✗'} DataSource MANUAL: ${row.dataSource}\n`);
+  } catch (e) {
+    results['datasource manual'] = false;
+    console.log(`✗ DataSource MANUAL error: ${e.message}\n`);
+  }
+
+  // Test 18: Timestamp from allocation, not render time
+  try {
+    const fixedTime = '2025-01-15T10:30:00Z';
+    const group = {
+      upc: '012',
+      totalQuantity: 2,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode', timestamp: fixedTime }],
+      unitRetail: null
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    const isFixed = row.timestamp === fixedTime || row.updatedAt === fixedTime;
+    results['timestamp allocation'] = isFixed;
+    console.log(`${results['timestamp allocation'] ? '✓' : '✗'} Timestamp from allocation: ${row.timestamp}\n`);
+  } catch (e) {
+    results['timestamp allocation'] = false;
+    console.log(`✗ Timestamp error: ${e.message}\n`);
+  }
+
+  // Test 19: Legacy allocations render
+  try {
+    const testSession = {
+      allocationRecords: [{
+        id: 'test_1',
+        upc: '013',
+        sku: 'TEST-SKU',
+        quantity: 7,
+        destination: 'SAVVY',
+        title: 'Legacy Item',
+        unitRetail: 15.00,
+        sourceRowNumbers: [1]
+      }],
+      rows: []
+    };
+    const rows = getDestinationManifestRows(testSession, 'SAVVY');
+    results['legacy allocations'] = rows.length === 1 && rows[0].totalQuantity === 7;
+    console.log(`${results['legacy allocations'] ? '✓' : '✗'} Legacy allocations: ${rows.length} row(s)\n`);
+  } catch (e) {
+    results['legacy allocations'] = false;
+    console.log(`✗ Legacy allocations error: ${e.message}\n`);
+  }
+
+  // Test 20: Source metadata preserved
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const group = {
+      upc: '014',
+      totalQuantity: 4,
+      records: [
+        { sourceRowNumbers: [1, 2], identificationMethod: 'barcode', timestamp: '2025-01-15T10:00:00Z' },
+        { sourceRowNumbers: [3], identificationMethod: 'barcode', timestamp: '2025-01-15T10:05:00Z' }
+      ]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    const srcRowsMatch = row.sourceRowNumbers.sort().join(',') === '1,2,3';
+    results['source metadata'] = srcRowsMatch && row.sourceRowNumbers.length === 3;
+    console.log(`${results['source metadata'] ? '✓' : '✗'} Source metadata: rows [${row.sourceRowNumbers}]\n`);
+  } catch (e) {
+    results['source metadata'] = false;
+    console.log(`✗ Source metadata error: ${e.message}\n`);
+  }
+
+  // Summary
+  const passed = Object.values(results).filter(v => v).length;
+  const total = Object.keys(results).length;
+  console.log('=== PHASE 4 TEST SUMMARY ===');
+  for (const [test, result] of Object.entries(results)) {
+    console.log(`  ${result ? '✓' : '✗'} ${test}`);
+  }
+  console.log(`\nPassed: ${passed}/${total}\n`);
+
+  return passed === total;
+}
+
+// Add test runners to window for manual testing
 window.runPhase1Tests = runPhase1Tests;
+window.runPhase4Tests = runPhase4Tests;
 
 </script>
 
@@ -5382,7 +6050,28 @@ window.runPhase1Tests = runPhase1Tests;
 <!-- PHASE 3: DESTINATION MANIFEST VIEW SCREEN -->
 <div class="scr" id="scr-destination-manifest">
   <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-receiving-home')" ontouchend="event.preventDefault();showScreen('scr-manifest-receiving-home')">← Back to Receiving</button>
+  <div style="display:flex;gap:10px;margin-bottom:12px">
+    <button class="btn" style="flex:1;margin-bottom:0;background:var(--gd);color:#000" onclick="showOutputColumnsConfig()" ontouchend="event.preventDefault();showOutputColumnsConfig()">⚙️ Output Columns</button>
+    <button class="btn" style="flex:1;margin-bottom:0" onclick="showOutputPreview(window._currentDestination)" ontouchend="event.preventDefault();showOutputPreview(window._currentDestination)">👁 Preview Output</button>
+  </div>
   <div id="destination-manifest-content"></div>
+</div>
+
+<!-- PHASE 4: OUTPUT COLUMNS CONFIGURATION SCREEN -->
+<div class="scr" id="scr-output-columns-config">
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromOutputConfig()" ontouchend="event.preventDefault();backFromOutputConfig()">← Back</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Output Columns</h2>
+    <p style="font-size:13px;color:var(--mu)">Customize visible columns and labels</p>
+  </div>
+  <div id="output-columns-config-content"></div>
+  <button class="btn red" style="margin-top:20px" onclick="restoreDefaultOutputColumnsConfirm()" ontouchend="event.preventDefault();restoreDefaultOutputColumnsConfirm()">🔄 Restore Defaults</button>
+</div>
+
+<!-- PHASE 4: OUTPUT PREVIEW SCREEN -->
+<div class="scr" id="scr-output-preview">
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromOutputPreview()" ontouchend="event.preventDefault();backFromOutputPreview()">← Back</button>
+  <div id="output-preview-content"></div>
 </div>
 
 </body>
