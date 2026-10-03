@@ -3571,9 +3571,10 @@ function renderDestinationManifest(destination) {
 
       html += '</div>';
 
-      // Edit/Remove buttons for each UPC
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+      // Edit/Remove/Change Destination buttons for each UPC
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">';
       html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:13px;padding:10px" onclick="editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">✏️ Edit</button>';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:13px;padding:10px" onclick="changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🎯 Change Dest</button>';
       html += '<button class="btn red" style="margin-bottom:0;font-size:13px;padding:10px" onclick="removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🗑️ Remove</button>';
       html += '</div>';
 
@@ -3585,7 +3586,11 @@ function renderDestinationManifest(destination) {
 }
 
 function editAllocationRow(upc, destination) {
-  const newQty = prompt('Enter new quantity for ' + upc + ':', '1');
+  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === destination);
+  if (records.length === 0) return;
+
+  const currentTotal = records.reduce((sum, r) => sum + r.quantity, 0);
+  const newQty = prompt('Enter new total quantity for ' + upc + ' (current: ' + currentTotal + '):', '' + currentTotal);
   if (newQty === null) return;
 
   const qty = parseInt(newQty) || 0;
@@ -3594,14 +3599,36 @@ function editAllocationRow(upc, destination) {
     return;
   }
 
-  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === destination);
-  if (records.length === 0) return;
-
+  // Delete all existing records for this UPC/destination
   records.forEach(record => {
-    updateAllocationQuantity(manifestSession, record.id, qty);
+    removeAllocation(manifestSession, record.id);
   });
 
-  toast('✅ Updated to ' + qty);
+  // Create single consolidated record with new total quantity
+  const consolidatedRecord = recordAllocation(
+    manifestSession,
+    upc,
+    records[0].sku || '',
+    qty,
+    destination,
+    records[0].identificationMethod || 'barcode',
+    records.flatMap(r => r.manifestRowIds || []),
+    records[0].title || '',
+    records[0].category || '',
+    records[0].unitRetail || null,
+    {
+      isOverage: false,
+      expectedQty: records[0].expectedQtyAtAllocation || 0,
+      assignedBefore: records.reduce((sum, r) => sum + r.quantity, 0),
+      assignedAfter: qty
+    }
+  );
+
+  if (consolidatedRecord) {
+    toast('✅ Updated to ' + qty);
+  } else {
+    toast('❌ Failed to update quantity');
+  }
   renderDestinationManifest(destination);
 }
 
@@ -3615,6 +3642,41 @@ function removeAllocationsByUpc(upc, destination) {
 
   toast('✅ Allocations removed');
   renderDestinationManifest(destination);
+}
+
+function changeAllocationDestination(upc, currentDestination) {
+  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === currentDestination);
+  if (records.length === 0) return;
+
+  const totalQty = records.reduce((sum, r) => sum + r.quantity, 0);
+  const destinations = ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'];
+  const availableDestinations = destinations.filter(d => d !== currentDestination).join(', ');
+  const newDest = prompt('Move ' + totalQty + ' units from ' + currentDestination + ' to:\n\n' + availableDestinations, 'SAVVY');
+
+  if (!newDest || !destinations.includes(newDest)) {
+    toast('⚠️ Invalid destination');
+    return;
+  }
+
+  if (newDest === currentDestination) {
+    toast('⚠️ Same destination');
+    return;
+  }
+
+  const confirmMsg = 'Move ' + totalQty + ' units of ' + upc + ' from ' + currentDestination + ' to ' + newDest + '?';
+  if (!confirm(confirmMsg)) return;
+
+  // Update all records to new destination
+  records.forEach(record => {
+    updateAllocationDestination(manifestSession, record.id, newDest);
+  });
+
+  toast('✅ Moved ' + totalQty + ' units to ' + newDest);
+  renderDestinationManifest(currentDestination);
+  setTimeout(() => {
+    renderDestinationManifest(newDest);
+    showDestinationManifest(newDest);
+  }, 500);
 }
 
 // Validate allocation quantity before confirmation
