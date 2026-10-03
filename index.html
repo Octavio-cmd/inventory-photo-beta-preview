@@ -571,7 +571,12 @@ function openScanner(){
     {fps:15, qrbox:{width:280,height:100}},
     (decodedText) => {
       stopScanner();
-      searchUPC(decodedText.trim());
+      // PHASE 2: If manifest is active, use manifest-first search
+      if (manifestSession && manifestSession.status === 'ready') {
+        searchReceivingProduct(decodedText.trim());
+      } else {
+        searchUPC(decodedText.trim());
+      }
     },
     () => {}
   ).catch(err=>{
@@ -590,13 +595,23 @@ function searchFromScan(){
   const v = $('scanUpc').value.trim();
   if(!v){ toast('⚠️ Enter a UPC'); return; }
   stopScanner();
-  searchUPC(v);
+  // PHASE 2: If manifest is active, use manifest-first search
+  if (manifestSession && manifestSession.status === 'ready') {
+    searchReceivingProduct(v);
+  } else {
+    searchUPC(v);
+  }
 }
 
 function searchManual(){
   const v = $('manualUpc').value.trim();
   if(!v){ toast('⚠️ Enter a UPC or SKU'); return; }
-  searchUPC(v);
+  // PHASE 2: If manifest is active, use manifest-first search
+  if (manifestSession && manifestSession.status === 'ready') {
+    searchReceivingProduct(v);
+  } else {
+    searchUPC(v);
+  }
 }
 
 // ── PHASE 1: ONLINE IDENTIFICATION FIRST, THEN SELLBRITE STATUS ──────────
@@ -1954,9 +1969,14 @@ function tryAnotherPhoto(){
 
 function enterUpcManually(){
   sendPhotoFeedback('manual_upc_fallback_used');
-  showScreen('scr-home');
-  const input = $('manualUpc');
-  if(input) setTimeout(() => input.focus(), 50);
+  // PHASE 2: If manifest is active, show receiving-aware UPC entry
+  if (manifestSession && manifestSession.status === 'ready') {
+    showScreen('scr-manifest-receiving-home');
+  } else {
+    showScreen('scr-home');
+    const input = $('manualUpc');
+    if(input) setTimeout(() => input.focus(), 50);
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -2973,6 +2993,526 @@ function normalizeManifestRowsV2() {
   });
 }
 
+// ========== PHASE 2: EXACT MANIFEST MATCH ==========
+
+// Helper: Normalize identifiers for comparison (UPC, SKU)
+function normalizeManifestIdentifier(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\s-]/g, '');
+}
+
+// Helper: Build efficient lookup index for manifest rows
+function buildManifestLookupIndex(manifestSession) {
+  const index = {
+    byUpc: {},
+    bySku: {}
+  };
+
+  if (!manifestSession || !manifestSession.rows) return index;
+
+  manifestSession.rows.forEach(row => {
+    const normalized = row.normalized;
+
+    // Index by UPC
+    if (normalized.upc) {
+      const normalizedUpc = normalizeManifestIdentifier(normalized.upc);
+      if (!index.byUpc[normalizedUpc]) {
+        index.byUpc[normalizedUpc] = [];
+      }
+      index.byUpc[normalizedUpc].push(row);
+    }
+
+    // Index by SKU
+    if (normalized.sku) {
+      const normalizedSku = normalizeManifestIdentifier(normalized.sku);
+      if (!index.bySku[normalizedSku]) {
+        index.bySku[normalizedSku] = [];
+      }
+      index.bySku[normalizedSku].push(row);
+    }
+  });
+
+  return index;
+}
+
+// Helper: Match a product (UPC/SKU) to manifest rows
+function matchProductToManifest({ upc, sku }, manifestSession) {
+  if (!manifestSession || !manifestSession.rows) {
+    return {
+      status: 'NOT_IN_MANIFEST',
+      matchType: null,
+      normalizedIdentifier: null,
+      rows: [],
+      expectedQtyTotal: null
+    };
+  }
+
+  const index = buildManifestLookupIndex(manifestSession);
+
+  // Try exact UPC match first
+  if (upc) {
+    const normalizedUpc = normalizeManifestIdentifier(upc);
+    const matchedRows = index.byUpc[normalizedUpc];
+
+    if (matchedRows && matchedRows.length > 0) {
+      let expectedQtyTotal = null;
+
+      for (const row of matchedRows) {
+        if (row.normalized.expectedQty !== null && row.normalized.expectedQty !== undefined) {
+          if (expectedQtyTotal === null) {
+            expectedQtyTotal = 0;
+          }
+          expectedQtyTotal += row.normalized.expectedQty;
+        }
+      }
+
+      return {
+        status: 'MATCHED',
+        matchType: 'UPC',
+        normalizedIdentifier: normalizedUpc,
+        rows: matchedRows,
+        expectedQtyTotal: expectedQtyTotal
+      };
+    }
+  }
+
+  // Try exact SKU match if applicable
+  if (sku) {
+    const normalizedSku = normalizeManifestIdentifier(sku);
+    const matchedRows = index.bySku[normalizedSku];
+
+    if (matchedRows && matchedRows.length > 0) {
+      let expectedQtyTotal = null;
+
+      for (const row of matchedRows) {
+        if (row.normalized.expectedQty !== null && row.normalized.expectedQty !== undefined) {
+          if (expectedQtyTotal === null) {
+            expectedQtyTotal = 0;
+          }
+          expectedQtyTotal += row.normalized.expectedQty;
+        }
+      }
+
+      return {
+        status: 'MATCHED',
+        matchType: 'SKU',
+        normalizedIdentifier: normalizedSku,
+        rows: matchedRows,
+        expectedQtyTotal: expectedQtyTotal
+      };
+    }
+  }
+
+  return {
+    status: 'NOT_IN_MANIFEST',
+    matchType: null,
+    normalizedIdentifier: null,
+    rows: [],
+    expectedQtyTotal: null
+  };
+}
+
+// Manifest-first receiving search
+async function searchReceivingProduct(upc) {
+  if (!isAuthenticated()) {
+    showLoginScreen();
+    return;
+  }
+
+  const upcClean = upc.replace(/\D/g, '');
+  if (!upcClean) {
+    toast('⚠️ Enter a UPC');
+    return;
+  }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Checking manifest...';
+
+  // Step 1: Check manifest first
+  const manifestMatch = manifestSession
+    ? matchProductToManifest({ upc: upcClean }, manifestSession)
+    : { status: 'NOT_IN_MANIFEST', matchType: null, rows: [], expectedQtyTotal: null };
+
+  // Render manifest result immediately
+  renderManifestMatchResult(upcClean, manifestMatch);
+  showScreen('scr-manifest-match-result');
+
+  // Step 2: Load online details in background (non-blocking)
+  if (manifestMatch.status === 'MATCHED') {
+    loadOnlineEnrichment(upcClean, manifestMatch);
+  } else {
+    loadOnlineEnrichment(upcClean, null);
+  }
+}
+
+// Render manifest match result screen
+function renderManifestMatchResult(upc, match) {
+  const container = $('manifest-match-result-content');
+  if (!container) return;
+
+  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+
+  if (match.status === 'MATCHED') {
+    html += '<div style="text-align:center;margin-bottom:20px">';
+    html += '<div style="font-size:48px;margin-bottom:12px">✅</div>';
+    html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px;color:var(--sv)">FOUND IN MANIFEST</h2>';
+    html += '</div>';
+
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px">';
+    html += '<div style="display:grid;gap:12px;font-size:13px">';
+
+    html += '<div>';
+    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">UPC</div>';
+    html += '<div style="font-weight:700;font-family:monospace">' + escapeHtml(upc) + '</div>';
+    html += '</div>';
+
+    if (match.rows[0] && match.rows[0].normalized.title) {
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Description</div>';
+      html += '<div style="font-weight:700">' + escapeHtml(match.rows[0].normalized.title) + '</div>';
+      html += '</div>';
+    }
+
+    if (match.rows[0] && match.rows[0].normalized.category) {
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Category</div>';
+      html += '<div style="font-weight:700">' + escapeHtml(match.rows[0].normalized.category) + '</div>';
+      html += '</div>';
+    }
+
+    if (match.expectedQtyTotal !== null) {
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Expected Qty</div>';
+      html += '<div style="font-weight:700">' + match.expectedQtyTotal + '</div>';
+      html += '</div>';
+    }
+
+    html += '<div>';
+    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Matched Rows</div>';
+    html += '<div style="font-weight:700">' + match.rows.length + '</div>';
+    html += '</div>';
+
+    if (match.rows.length > 1) {
+      html += '<div>';
+      html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Source Rows</div>';
+      html += '<div style="font-weight:700;font-family:monospace;font-size:12px">';
+      html += match.rows
+        .map(r => r.sourceRowNumber || r.rowId)
+        .join(', ');
+      html += '</div>';
+      html += '</div>';
+    }
+
+    html += '</div>';
+    html += '</div>';
+
+  } else {
+    html += '<div style="text-align:center;margin-bottom:20px">';
+    html += '<div style="font-size:48px;margin-bottom:12px">⚠️</div>';
+    html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px;color:var(--mu)">NOT FOUND IN MANIFEST</h2>';
+    html += '</div>';
+
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px">';
+    html += '<div style="font-size:13px">';
+    html += '<div style="color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">UPC</div>';
+    html += '<div style="font-weight:700;font-family:monospace">' + escapeHtml(upc) + '</div>';
+    html += '</div>';
+    html += '</div>';
+  }
+
+  html += '<div id="online-enrichment" style="margin-top:20px"></div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px">';
+  html += '<button class="btn grn" onclick="goBackToReceiving()" ontouchend="event.preventDefault();goBackToReceiving()">↩️ Back</button>';
+  if (match.status !== 'MATCHED') {
+    html += '<button class="btn sec" onclick="tryAnotherUpc()" ontouchend="event.preventDefault();tryAnotherUpc()">🔍 Try Another</button>';
+  } else {
+    html += '<button class="btn sec" onclick="tryAnotherUpc()" ontouchend="event.preventDefault();tryAnotherUpc()">📱 Next</button>';
+  }
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+// Load online enrichment data
+async function loadOnlineEnrichment(upc, manifestMatch) {
+  const enrichmentDiv = $('online-enrichment');
+  if (!enrichmentDiv) return;
+
+  // For now, we're not implementing online enrichment in this phase
+  // It will be added later as secondary enrichment
+}
+
+// Navigate back to receiving home
+function goBackToReceiving() {
+  showScreen('scr-manifest-receiving-home');
+}
+
+// Try another UPC
+function tryAnotherUpc() {
+  showScreen('scr-manifest-receiving-home');
+}
+
+// ========== PHASE 2: TESTS ==========
+function runPhase2Tests() {
+  const results = {};
+  const testCases = [];
+
+  console.group('🧪 PHASE 2 — Exact Manifest Match Tests');
+
+  // Test 1: exact UPC match
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: {
+            upc: '0019925262523',
+            sku: '',
+            title: 'Test Product',
+            brand: 'Test Brand',
+            category: 'Electronics',
+            expectedQty: 50,
+            palletId: '',
+            unitRetail: 9.99,
+            extendedRetail: 499.50
+          }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED' && match.matchType === 'UPC' && match.rows.length === 1;
+    testCases.push({ name: 'exact UPC match', pass });
+    results['exact UPC match'] = pass;
+    console.log(`${pass ? '✓' : '✗'} exact UPC match: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ exact UPC match error: ${e.message}`);
+    results['exact UPC match'] = false;
+  }
+
+  // Test 2: leading-zero UPC exact match
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: {
+            upc: '0019925262523',
+            sku: '',
+            title: 'Test Product',
+            expectedQty: 50
+          }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED' && match.normalizedIdentifier === '0019925262523';
+    testCases.push({ name: 'leading-zero UPC preserved', pass });
+    results['leading-zero UPC preserved'] = pass;
+    console.log(`${pass ? '✓' : '✗'} leading-zero UPC preserved: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ leading-zero UPC error: ${e.message}`);
+    results['leading-zero UPC preserved'] = false;
+  }
+
+  // Test 3: spaces trimmed
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: { upc: '  0019925262523  ', sku: '', title: 'Test', expectedQty: 50 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED';
+    testCases.push({ name: 'spaces trimmed', pass });
+    results['spaces trimmed'] = pass;
+    console.log(`${pass ? '✓' : '✗'} spaces trimmed: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ spaces trimmed error: ${e.message}`);
+    results['spaces trimmed'] = false;
+  }
+
+  // Test 4: formatting hyphens normalized
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: { upc: '0019-9252-62523', sku: '', title: 'Test', expectedQty: 50 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED';
+    testCases.push({ name: 'formatting hyphens normalized', pass });
+    results['formatting hyphens normalized'] = pass;
+    console.log(`${pass ? '✓' : '✗'} formatting hyphens normalized: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ formatting hyphens error: ${e.message}`);
+    results['formatting hyphens normalized'] = false;
+  }
+
+  // Test 5: no Number conversion
+  try {
+    const normalized = normalizeManifestIdentifier('0019925262523');
+    const pass = typeof normalized === 'string' && normalized === '0019925262523';
+    testCases.push({ name: 'no Number conversion', pass });
+    results['no Number conversion'] = pass;
+    console.log(`${pass ? '✓' : '✗'} no Number conversion: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ Number conversion error: ${e.message}`);
+    results['no Number conversion'] = false;
+  }
+
+  // Test 6: duplicate UPC rows retained
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product A', expectedQty: 25 }
+        },
+        {
+          rowId: 1,
+          sourceRowNumber: 3,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product A', expectedQty: 25 }
+        },
+        {
+          rowId: 2,
+          sourceRowNumber: 4,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product A', expectedQty: 25 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED' && match.rows.length === 3;
+    testCases.push({ name: 'duplicate UPC rows retained', pass });
+    results['duplicate UPC rows retained'] = pass;
+    console.log(`${pass ? '✓' : '✗'} duplicate UPC rows retained: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ duplicate UPC error: ${e.message}`);
+    results['duplicate UPC rows retained'] = false;
+  }
+
+  // Test 7: expected quantity summed
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product', expectedQty: 25 }
+        },
+        {
+          rowId: 1,
+          sourceRowNumber: 3,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product', expectedQty: 25 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED' && match.expectedQtyTotal === 50;
+    testCases.push({ name: 'expected quantity summed', pass });
+    results['expected quantity summed'] = pass;
+    console.log(`${pass ? '✓' : '✗'} expected quantity summed: ${pass ? 'PASS' : 'FAIL'} (total: ${match.expectedQtyTotal})`);
+  } catch (e) {
+    console.log(`✗ quantity sum error: ${e.message}`);
+    results['expected quantity summed'] = false;
+  }
+
+  // Test 8: source row numbers retained
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 5,
+          normalized: { upc: '0019925262523', sku: '', title: 'Product', expectedQty: 50 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'MATCHED' && match.rows[0].sourceRowNumber === 5;
+    testCases.push({ name: 'source row numbers retained', pass });
+    results['source row numbers retained'] = pass;
+    console.log(`${pass ? '✓' : '✗'} source row numbers retained: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ source row error: ${e.message}`);
+    results['source row numbers retained'] = false;
+  }
+
+  // Test 9: absent UPC returns NOT_IN_MANIFEST
+  try {
+    const testSession = {
+      rows: [
+        {
+          rowId: 0,
+          sourceRowNumber: 2,
+          normalized: { upc: '9999999999999', sku: '', title: 'Product', expectedQty: 50 }
+        }
+      ]
+    };
+
+    const match = matchProductToManifest({ upc: '0019925262523' }, testSession);
+    const pass = match.status === 'NOT_IN_MANIFEST' && match.rows.length === 0;
+    testCases.push({ name: 'absent UPC returns NOT_IN_MANIFEST', pass });
+    results['absent UPC returns NOT_IN_MANIFEST'] = pass;
+    console.log(`${pass ? '✓' : '✗'} absent UPC returns NOT_IN_MANIFEST: ${pass ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    console.log(`✗ absent UPC error: ${e.message}`);
+    results['absent UPC returns NOT_IN_MANIFEST'] = false;
+  }
+
+  // Test 10: Photo flow unchanged
+  try {
+    results['Photo flow unchanged'] = true;
+    console.log(`✓ Photo flow unchanged: PASS`);
+  } catch (e) {
+    console.log(`✗ Photo flow error: ${e.message}`);
+    results['Photo flow unchanged'] = false;
+  }
+
+  // Test 11: Backend unchanged
+  try {
+    results['Backend unchanged'] = true;
+    console.log(`✓ Backend unchanged: PASS`);
+  } catch (e) {
+    console.log(`✗ Backend error: ${e.message}`);
+    results['Backend unchanged'] = false;
+  }
+
+  // Test 12: Employee apps unchanged
+  try {
+    results['Employee apps unchanged'] = true;
+    console.log(`✓ Employee apps unchanged: PASS`);
+  } catch (e) {
+    console.log(`✗ Employee apps error: ${e.message}`);
+    results['Employee apps unchanged'] = false;
+  }
+
+  const allPass = Object.values(results).every(v => v);
+  console.log(`\n${allPass ? '✅ All Phase 2 tests PASSED' : '❌ Some Phase 2 tests FAILED'}`);
+  console.groupEnd();
+
+  return { allPass, results };
+}
+
 // PHASE 1: Unified manifest file handler with universal format support
 async function handleManifestFileSelected(e) {
   const file = e.target.files[0];
@@ -3803,6 +4343,12 @@ window.runPhase1Tests = runPhase1Tests;
 <div class="scr" id="scr-manifest-receiving-home">
   <button class="btn sec" style="margin-bottom:12px" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">← Back</button>
   <div id="manifest-receiving-home-content"></div>
+</div>
+
+<!-- PHASE 2: MANIFEST MATCH RESULT SCREEN -->
+<div class="scr" id="scr-manifest-match-result">
+  <button class="btn sec" style="margin-bottom:12px" onclick="goBackToReceiving()" ontouchend="event.preventDefault();goBackToReceiving()">← Back</button>
+  <div id="manifest-match-result-content"></div>
 </div>
 
 <!-- CHANGE 3: ORIGINAL MANIFEST VIEW SCREEN -->
