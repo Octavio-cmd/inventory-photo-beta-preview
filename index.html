@@ -573,7 +573,7 @@ function openScanner(){
       stopScanner();
       // PHASE 2: If manifest is active, use manifest-first search
       if (manifestSession && manifestSession.status === 'ready') {
-        searchReceivingProduct(decodedText.trim());
+        searchReceivingProduct(decodedText.trim(), 'barcode');
       } else {
         searchUPC(decodedText.trim());
       }
@@ -597,7 +597,7 @@ function searchFromScan(){
   stopScanner();
   // PHASE 2: If manifest is active, use manifest-first search
   if (manifestSession && manifestSession.status === 'ready') {
-    searchReceivingProduct(v);
+    searchReceivingProduct(v, 'barcode');
   } else {
     searchUPC(v);
   }
@@ -608,7 +608,7 @@ function searchManual(){
   if(!v){ toast('⚠️ Enter a UPC or SKU'); return; }
   // PHASE 2: If manifest is active, use manifest-first search
   if (manifestSession && manifestSession.status === 'ready') {
-    searchReceivingProduct(v);
+    searchReceivingProduct(v, 'manual_upc');
   } else {
     searchUPC(v);
   }
@@ -1994,7 +1994,7 @@ function submitManifestManualUpc() {
     return;
   }
 
-  searchReceivingProduct(value);
+  searchReceivingProduct(value, 'manual_upc');
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -2109,7 +2109,7 @@ document.addEventListener('DOMContentLoaded', function(){
   // ISSUE 1: Load v3 session first (authoritative), fallback to v2
   const v3 = loadManifestSessionFromStorageV3();
   if (v3) {
-    manifestSession = v3;
+    manifestSession = ensureAllocationRecords(v3);
   } else {
     loadManifestSessionFromStorage();
   }
@@ -2615,6 +2615,15 @@ function loadManifestSessionFromStorageV3() {
   }
 }
 
+// PHASE 3: Migration helper - ensure v3 sessions have allocationRecords
+function ensureAllocationRecords(session) {
+  if (!session) return session;
+  if (!Array.isArray(session.allocationRecords)) {
+    session.allocationRecords = [];
+  }
+  return session;
+}
+
 let currentRawRows = [];
 let currentWorkbook = null;
 let currentSheetName = null;
@@ -2841,6 +2850,7 @@ function submitManifestMapping() {
 // CHANGE 1: Render Manifest Receiving Home screen
 function renderManifestReceivingHome() {
   if (!manifestSession) return;
+  ensureAllocationRecords(manifestSession);
   const container = $('manifest-receiving-home-content');
   if (!container) return;
 
@@ -3167,7 +3177,7 @@ function matchProductToManifest({ upc, sku }, manifestSession) {
 }
 
 // Manifest-first receiving search
-async function searchReceivingProduct(upc) {
+async function searchReceivingProduct(upc, identificationMethod) {
   if (!isAuthenticated()) {
     showLoginScreen();
     return;
@@ -3188,7 +3198,7 @@ async function searchReceivingProduct(upc) {
     : { status: 'NOT_IN_MANIFEST', matchType: null, rows: [], expectedQtyTotal: null };
 
   // Render manifest result immediately
-  renderManifestMatchResult(upcClean, manifestMatch);
+  renderManifestMatchResult(upcClean, manifestMatch, identificationMethod || 'barcode');
   showScreen('scr-manifest-match-result');
 
   // Step 2: Load online details in background (non-blocking)
@@ -3200,7 +3210,7 @@ async function searchReceivingProduct(upc) {
 }
 
 // Render manifest match result screen
-function renderManifestMatchResult(upc, match) {
+function renderManifestMatchResult(upc, match, identificationMethod) {
   const container = $('manifest-match-result-content');
   if (!container) return;
 
@@ -3242,8 +3252,9 @@ function renderManifestMatchResult(upc, match) {
     }
 
     const summary = getManifestAllocationSummary(manifestSession);
+    const normalizedUpcForComparison = normalizeManifestIdentifier(match.normalizedIdentifier || upc);
     const alreadyAssigned = manifestSession.allocationRecords
-      .filter(r => r.upc === (match.normalizedIdentifier || upc))
+      .filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpcForComparison)
       .reduce((sum, r) => sum + r.quantity, 0);
     const remaining = Math.max(0, (match.expectedQtyTotal || 0) - alreadyAssigned);
 
@@ -3323,7 +3334,8 @@ function renderManifestMatchResult(upc, match) {
   // Store match context for allocation
   window._lastMatchContext = {
     upc,
-    match
+    match,
+    identificationMethod: identificationMethod || 'barcode'
   };
 }
 
@@ -3386,7 +3398,7 @@ function getManifestAllocationSummary(manifestSession) {
   };
 }
 
-function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail) {
+function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail, overageData) {
   if (!manifestSession || !manifestSession.allocationRecords) return null;
 
   const record = {
@@ -3402,11 +3414,16 @@ function recordAllocation(manifestSession, upc, sku, quantity, destination, iden
     title: title || '',
     category: category || '',
     unitRetail: unitRetail || null,
-    notes: ''
+    notes: '',
+    // PHASE 3: Overage tracking
+    isOverage: overageData?.isOverage || false,
+    expectedQtyAtAllocation: overageData?.expectedQty || null,
+    assignedBefore: overageData?.assignedBefore || 0,
+    assignedAfter: overageData?.assignedAfter || 0
   };
 
   manifestSession.allocationRecords.push(record);
-  saveManifestSessionToStorageV3();
+  saveManifestSessionToStorageV3(manifestSession);
   return record;
 }
 
@@ -3415,7 +3432,7 @@ function updateAllocationQuantity(manifestSession, recordId, newQuantity) {
   const record = manifestSession.allocationRecords.find(r => r.id === recordId);
   if (!record) return false;
   record.quantity = parseInt(newQuantity) || 1;
-  saveManifestSessionToStorageV3();
+  saveManifestSessionToStorageV3(manifestSession);
   return true;
 }
 
@@ -3424,7 +3441,7 @@ function updateAllocationDestination(manifestSession, recordId, newDestination) 
   const record = manifestSession.allocationRecords.find(r => r.id === recordId);
   if (!record) return false;
   record.destination = newDestination;
-  saveManifestSessionToStorageV3();
+  saveManifestSessionToStorageV3(manifestSession);
   return true;
 }
 
@@ -3433,7 +3450,7 @@ function removeAllocation(manifestSession, recordId) {
   const idx = manifestSession.allocationRecords.findIndex(r => r.id === recordId);
   if (idx === -1) return false;
   manifestSession.allocationRecords.splice(idx, 1);
-  saveManifestSessionToStorageV3();
+  saveManifestSessionToStorageV3(manifestSession);
   return true;
 }
 
@@ -3611,8 +3628,9 @@ function validateAllocationQty() {
   if (!ctx || !ctx.match) return;
 
   const expected = ctx.match.expectedQtyTotal || 0;
+  const normalizedUpcForComparison = normalizeManifestIdentifier(ctx.match.normalizedIdentifier || ctx.upc);
   const alreadyAssigned = manifestSession.allocationRecords
-    .filter(r => r.upc === (ctx.match.normalizedIdentifier || ctx.upc))
+    .filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpcForComparison)
     .reduce((sum, r) => sum + r.quantity, 0);
   const total = alreadyAssigned + qty;
 
@@ -3641,12 +3659,14 @@ function confirmAllocation(upc, destination) {
   }
 
   const expected = ctx.match.expectedQtyTotal || 0;
+  const normalizedUpcForComparison = normalizeManifestIdentifier(ctx.match.normalizedIdentifier || ctx.upc);
   const alreadyAssigned = manifestSession.allocationRecords
-    .filter(r => r.upc === (ctx.match.normalizedIdentifier || ctx.upc))
+    .filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpcForComparison)
     .reduce((sum, r) => sum + r.quantity, 0);
   const total = alreadyAssigned + qty;
 
-  if (total > expected) {
+  const isOverage = total > expected;
+  if (isOverage) {
     if (!confirm('⚠️ Assigned quantity (' + total + ') exceeds manifest expected (' + expected + '). Confirm overage?')) {
       return;
     }
@@ -3658,11 +3678,17 @@ function confirmAllocation(upc, destination) {
     ctx.match.rows[0]?.normalized?.sku || '',
     qty,
     destination,
-    'barcode',
+    ctx.identificationMethod || 'barcode',
     ctx.match.rows,
     ctx.match.rows[0]?.normalized?.title || '',
     ctx.match.rows[0]?.normalized?.category || '',
-    ctx.match.rows[0]?.normalized?.unitRetail || null
+    ctx.match.rows[0]?.normalized?.unitRetail || null,
+    {
+      isOverage: isOverage,
+      expectedQty: expected,
+      assignedBefore: alreadyAssigned,
+      assignedAfter: total
+    }
   );
 
   if (record) {
