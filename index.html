@@ -1969,14 +1969,32 @@ function tryAnotherPhoto(){
 
 function enterUpcManually(){
   sendPhotoFeedback('manual_upc_fallback_used');
-  // PHASE 2: If manifest is active, show receiving-aware UPC entry
-  if (manifestSession && manifestSession.status === 'ready') {
-    showScreen('scr-manifest-receiving-home');
+  // PHASE 2: If manifest is active, show dedicated receiving UPC input screen
+  if (manifestSession && manifestSession.version === 3 && manifestSession.status === 'ready') {
+    showScreen('scr-manifest-manual-upc');
+    const input = $('manifest-manual-upc');
+    if(input) {
+      input.value = '';
+      setTimeout(() => input.focus(), 50);
+    }
   } else {
     showScreen('scr-home');
     const input = $('manualUpc');
     if(input) setTimeout(() => input.focus(), 50);
   }
+}
+
+// PHASE 2: Submit manual UPC from manifest receiving screen
+function submitManifestManualUpc() {
+  const input = $('manifest-manual-upc');
+  const value = (input?.value || '').trim();
+
+  if (!value) {
+    toast('⚠️ Enter a UPC');
+    return;
+  }
+
+  searchReceivingProduct(value);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -4343,6 +4361,34 @@ window.runPhase1Tests = runPhase1Tests;
 <div class="scr" id="scr-manifest-receiving-home">
   <button class="btn sec" style="margin-bottom:12px" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">← Back</button>
   <div id="manifest-receiving-home-content"></div>
+</div>
+
+<!-- PHASE 2: MANIFEST MANUAL UPC SCREEN -->
+<div class="scr" id="scr-manifest-manual-upc">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-receiving-home')" ontouchend="event.preventDefault();showScreen('scr-manifest-receiving-home')">← Back</button>
+
+  <div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:48px;margin-bottom:12px">⌨️</div>
+      <h2 style="font-size:20px;font-weight:800">Manual UPC Entry</h2>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">UPC / GTIN</label>
+      <input
+        id="manifest-manual-upc"
+        type="text"
+        inputmode="numeric"
+        placeholder="Enter UPC or barcode..."
+        style="width:100%;padding:12px;border:2px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)"
+        onkeydown="if(event.key==='Enter') submitManifestManualUpc()">
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn grn" onclick="submitManifestManualUpc()" ontouchend="event.preventDefault();submitManifestManualUpc()" style="margin-bottom:0">🔍 Check Manifest</button>
+      <button class="btn sec" onclick="showScreen('scr-manifest-receiving-home')" ontouchend="event.preventDefault();showScreen('scr-manifest-receiving-home')" style="margin-bottom:0">← Back</button>
+    </div>
+  </div>
 </div>
 
 <!-- PHASE 2: MANIFEST MATCH RESULT SCREEN -->
