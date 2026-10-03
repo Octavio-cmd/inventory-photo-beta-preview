@@ -2005,6 +2005,129 @@ const MANIFEST_STORAGE_KEY = 'inventory_manifest_beta_session_v2';
 
 let manifestSession = null;
 
+// PHASE 4: Configurable output data model
+const DEFAULT_OUTPUT_COLUMNS = [
+  { key: 'sku', label: 'SKU', enabled: true, order: 1 },
+  { key: 'upc', label: 'UPC', enabled: true, order: 2 },
+  { key: 'description', label: 'DISCRIPCTION', enabled: true, order: 3 },
+  { key: 'qty', label: 'QTY', enabled: true, order: 4 },
+  { key: 'retail', label: 'RETAIL', enabled: true, order: 5 },
+  { key: 'extendedRetail', label: 'EXT. RETAIL', enabled: true, order: 6 },
+  { key: 'ropa', label: 'ROPA', enabled: true, order: 7 }
+];
+
+function ensureOutputConfig(session) {
+  if (!session) return;
+  if (!session.outputConfig) {
+    session.outputConfig = {
+      version: 1,
+      columns: JSON.parse(JSON.stringify(DEFAULT_OUTPUT_COLUMNS))
+    };
+  }
+}
+
+function buildDestinationOutputRow(allocationGroup, manifestContext) {
+  const row = {
+    sku: '',
+    upc: '',
+    description: '',
+    qty: 0,
+    retail: null,
+    extendedRetail: null,
+    ropa: '',
+    brand: '',
+    category: '',
+    imageUrl: '',
+    manifestDescription: '',
+    manifestQty: null,
+    manifestRetail: null,
+    manifestExtendedRetail: null,
+    manifestSku: '',
+    manifestCategory: '',
+    manifestPalletId: '',
+    ebayTitle: '',
+    ebayLow: null,
+    ebayAverage: null,
+    ebayHigh: null,
+    ebayMatches: 0,
+    ebayItemId: '',
+    ebayImage: '',
+    dataSource: '',
+    identificationMethod: '',
+    destination: '',
+    manifestFile: '',
+    sourceRowNumbers: [],
+    timestamp: '',
+    notes: ''
+  };
+
+  if (!allocationGroup) return row;
+
+  // Set destination
+  row.destination = allocationGroup.destination || '';
+  row.qty = allocationGroup.totalQuantity || 0;
+  row.upc = allocationGroup.upc || '';
+  row.sku = allocationGroup.sku || '';
+  row.identificationMethod = allocationGroup.identificationMethod || 'barcode';
+  row.timestamp = new Date().toISOString();
+
+  // Set from allocation group data
+  if (allocationGroup.title) {
+    row.description = allocationGroup.title;
+    row.dataSource = row.dataSource || 'MANIFEST';
+  }
+  if (allocationGroup.category) {
+    row.category = allocationGroup.category;
+    row.manifestCategory = allocationGroup.category;
+  }
+  if (allocationGroup.unitRetail !== null && typeof allocationGroup.unitRetail === 'number') {
+    row.retail = allocationGroup.unitRetail;
+    row.manifestRetail = allocationGroup.unitRetail;
+    row.dataSource = 'MANIFEST';
+    if (row.qty && typeof row.qty === 'number') {
+      row.extendedRetail = row.qty * row.retail;
+      row.manifestExtendedRetail = row.extendedRetail;
+    }
+  }
+
+  // Collect source row numbers from records
+  if (allocationGroup.records && Array.isArray(allocationGroup.records)) {
+    const sourceRows = new Set();
+    allocationGroup.records.forEach(rec => {
+      if (rec.sourceRowNumbers && Array.isArray(rec.sourceRowNumbers)) {
+        rec.sourceRowNumbers.forEach(sn => sourceRows.add(sn));
+      }
+    });
+    row.sourceRowNumbers = Array.from(sourceRows).sort((a, b) => a - b);
+  }
+
+  // Preserve manifest expected quantity separately
+  if (allocationGroup.records && allocationGroup.records.length > 0) {
+    const firstRec = allocationGroup.records[0];
+    if (firstRec.expectedQtyAtAllocation !== null && typeof firstRec.expectedQtyAtAllocation === 'number') {
+      row.manifestQty = firstRec.expectedQtyAtAllocation;
+    }
+  }
+
+  return row;
+}
+
+function getDestinationOutputRows(manifestSession, destination) {
+  if (!manifestSession || !manifestSession.allocationRecords) return [];
+
+  const rows = getDestinationManifestRows(manifestSession, destination);
+  return rows.map(row => buildDestinationOutputRow(row, { manifestSession }));
+}
+
+function restoreDefaultOutputColumns(session) {
+  if (!session) return;
+  session.outputConfig = {
+    version: 1,
+    columns: JSON.parse(JSON.stringify(DEFAULT_OUTPUT_COLUMNS))
+  };
+  saveManifestSessionToStorageV3(session);
+}
+
 function generateSessionId(){
   return 'ms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
@@ -2114,6 +2237,7 @@ document.addEventListener('DOMContentLoaded', function(){
   const v3 = loadManifestSessionFromStorageV3();
   if (v3) {
     manifestSession = ensureAllocationRecords(v3);
+    ensureOutputConfig(manifestSession);
   } else {
     loadManifestSessionFromStorage();
   }
@@ -2834,6 +2958,7 @@ function submitManifestMapping() {
   msgEl.textContent = '';
 
   normalizeManifestRowsV2();
+  ensureOutputConfig(manifestSession);
   manifestSession.status = 'ready';
 
   // ISSUE 6: For Universal Importer v3, save ONLY to v3 key (not v2)
@@ -2855,6 +2980,7 @@ function submitManifestMapping() {
 function renderManifestReceivingHome() {
   if (!manifestSession) return;
   ensureAllocationRecords(manifestSession);
+  ensureOutputConfig(manifestSession);
   const container = $('manifest-receiving-home-content');
   if (!container) return;
 
