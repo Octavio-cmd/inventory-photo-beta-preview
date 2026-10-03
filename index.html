@@ -3352,6 +3352,56 @@ async function loadOnlineEnrichment(upc, manifestMatch) {
 // PHASE 3: ALLOCATION FUNCTIONS
 // ═════════════════════════════════════════════════════════════════════════
 
+function getManifestUpcVarianceSummary(manifestSession) {
+  if (!manifestSession || !manifestSession.allocationRecords) return {};
+
+  // Build map of normalized UPCs to their expected quantities from manifest
+  const expectedByNormalizedUpc = {};
+  manifestSession.rows.forEach(row => {
+    if (row.normalized && row.normalized.upc) {
+      const normalizedUpc = normalizeManifestIdentifier(row.normalized.upc);
+      if (!expectedByNormalizedUpc[normalizedUpc]) {
+        expectedByNormalizedUpc[normalizedUpc] = 0;
+      }
+      const qty = row.normalized.expectedQty;
+      expectedByNormalizedUpc[normalizedUpc] += (typeof qty === 'number' && qty !== null ? qty : 0);
+    }
+  });
+
+  // Build map of normalized UPCs to their assigned quantities
+  const assignedByNormalizedUpc = {};
+  manifestSession.allocationRecords.forEach(record => {
+    const normalizedUpc = normalizeManifestIdentifier(record.upc);
+    if (!assignedByNormalizedUpc[normalizedUpc]) {
+      assignedByNormalizedUpc[normalizedUpc] = 0;
+    }
+    assignedByNormalizedUpc[normalizedUpc] += (record.quantity || 0);
+  });
+
+  // Calculate variance for each UPC
+  const variance = {};
+  const allNormalizedUpcs = new Set([...Object.keys(expectedByNormalizedUpc), ...Object.keys(assignedByNormalizedUpc)]);
+
+  allNormalizedUpcs.forEach(normalizedUpc => {
+    const expectedQty = expectedByNormalizedUpc[normalizedUpc] || 0;
+    const assignedQty = assignedByNormalizedUpc[normalizedUpc] || 0;
+    const remainingQty = Math.max(0, expectedQty - assignedQty);
+    const overageQty = Math.max(0, assignedQty - expectedQty);
+    const isOverage = assignedQty > expectedQty;
+
+    variance[normalizedUpc] = {
+      upc: normalizedUpc,
+      expectedQty,
+      assignedQty,
+      remainingQty,
+      overageQty,
+      isOverage
+    };
+  });
+
+  return variance;
+}
+
 function getManifestAllocationSummary(manifestSession) {
   if (!manifestSession || !manifestSession.allocationRecords) {
     return {
@@ -3359,6 +3409,8 @@ function getManifestAllocationSummary(manifestSession) {
       totalAssigned: 0,
       totalRemaining: 0,
       totalOverage: 0,
+      overageUnitsByUpc: 0,
+      overageUpcCount: 0,
       byDestination: {
         SAVVY: 0,
         DWI: 0,
@@ -3393,11 +3445,22 @@ function getManifestAllocationSummary(manifestSession) {
 
   const totalOverage = Math.max(0, totalAssigned - totalExpected);
 
+  // Calculate per-UPC overage totals
+  const variance = getManifestUpcVarianceSummary(manifestSession);
+  let overageUnitsByUpc = 0;
+  let overageUpcCount = 0;
+  Object.values(variance).forEach(v => {
+    overageUnitsByUpc += v.overageQty;
+    if (v.isOverage) overageUpcCount++;
+  });
+
   return {
     totalExpected,
     totalAssigned,
     totalRemaining: Math.max(0, totalExpected - totalAssigned),
     totalOverage,
+    overageUnitsByUpc,
+    overageUpcCount,
     byDestination
   };
 }
@@ -3465,17 +3528,23 @@ function consolidateAllocationGroup(manifestSession, upc, records, newQuantity, 
   const manifestRowIds = [...new Set(records.flatMap(r => r.manifestRowIds || []))];
   const sourceRowNumbers = [...new Set(records.flatMap(r => r.sourceRowNumbers || []))];
 
+  // Normalize UPC for consistent lookups
+  const normalizedUpc = normalizeManifestIdentifier(upc);
+
   // Calculate expected quantity for this UPC across all destinations
-  const allAllocationsForUpc = manifestSession.allocationRecords.filter(r => r.upc === upc);
+  const allAllocationsForUpc = manifestSession.allocationRecords.filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpc);
   const currentAllocatedOtherDests = allAllocationsForUpc
     .filter(r => r.destination !== destination)
     .reduce((sum, r) => sum + r.quantity, 0);
   const totalNewAssignment = newQuantity + currentAllocatedOtherDests;
 
-  // Find expected quantity from manifest
+  // Find expected quantity from manifest using normalized UPC comparison
   const expectedQty = manifestSession.rows
-    .filter(row => row.normalized && row.normalized.upc === upc)
-    .reduce((sum, row) => sum + (row.normalized.expectedQty || 0), 0);
+    .filter(row => row.normalized && normalizeManifestIdentifier(row.normalized.upc) === normalizedUpc)
+    .reduce((sum, row) => {
+      const qty = row.normalized.expectedQty;
+      return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
+    }, 0);
 
   const isOverage = totalNewAssignment > expectedQty;
 
