@@ -2042,7 +2042,11 @@ function renderManifestSessionIndicator(){
 }
 
 function openManifestReceiving(){
-  if(manifestSession && (manifestSession.status === 'ready' || manifestSession.status === 'mapping')){
+  if(manifestSession && manifestSession.status === 'ready'){
+    // CHANGE 1: Route to Receiving Home after manifest is ready
+    renderManifestReceivingHome();
+    showScreen('scr-manifest-receiving-home');
+  } else if(manifestSession && manifestSession.status === 'mapping'){
     openManifestSummary();
   } else {
     showScreen('scr-manifest-upload');
@@ -2466,25 +2470,46 @@ function normalizeHeaderName(name) {
 
 function scoreRowAsHeader(row) {
   let score = 0;
+  let matchedFieldCount = 0;
   const normalizedRow = row.map(normalizeHeaderName);
 
+  // Count matched semantic fields and score
   for (const aliases of Object.values(SEMANTIC_FIELD_ALIASES)) {
     const matched = aliases.some(alias =>
       normalizedRow.includes(normalizeHeaderName(alias))
     );
-    if (matched) score += 10;
+    if (matched) {
+      score += 10;
+      matchedFieldCount++;
+    }
   }
 
   const hasIdentifier = normalizedRow.some(h =>
-    ['UPC', 'UPC NUMBER', 'SKU', 'ITEM', 'ITEM NUMBER', 'DESCRIPTION', 'TITLE']
-      .some(x => h.includes(normalizeHeaderName(x)))
+    ['UPC', 'UPC NUMBER', 'SKU', 'ITEM', 'ITEM NUMBER'].some(x =>
+      h.includes(normalizeHeaderName(x))
+    )
+  );
+
+  const hasDescription = normalizedRow.some(h =>
+    ['DESCRIPTION', 'TITLE', 'PRODUCT', 'NAME'].some(x =>
+      h.includes(normalizeHeaderName(x))
+    )
   );
 
   const hasQty = normalizedRow.some(h =>
     h.includes('QTY') || h.includes('QUANTITY')
   );
 
+  // Require at least 2 matched fields for high confidence
+  if (matchedFieldCount < 2) {
+    score = Math.max(0, score - 15);
+  }
+
+  // Boost score for strong header combinations
   if (hasIdentifier && hasQty) score += 20;
+  if (hasIdentifier && hasDescription) score += 15;
+  if (hasDescription && hasQty) score += 15;
+  if (hasIdentifier && hasDescription && hasQty) score += 25;
 
   return score;
 }
@@ -2632,6 +2657,9 @@ function confirmDetectedHeader() {
     headerRowIndex: detectedHeaderRowIndex,
     sourceHeaderRowNumber: sourceHeaderRowNumber,  // ISSUE 4: Audit traceability
     rawHeaders: headerRow,
+    // CHANGE 7: Store original manifest data for "Show Original Manifest" feature
+    originalRawRows: currentRawRows,
+    originalSourceRowMap: currentSourceRowMap,
     mapping: {},
     rows: currentRawRows.slice(detectedHeaderRowIndex + 1).map((row, idx) => {
       // Calculate actual source row from sourceRowMap - ISSUE 2 FIX
@@ -2757,8 +2785,130 @@ function submitManifestMapping() {
   }
 
   renderManifestSessionIndicator();
-  renderManifestSummary();
-  showScreen('scr-manifest-summary');
+  // CHANGE 1: After manifest is ready, route to Receiving Home instead of Summary
+  renderManifestReceivingHome();
+  showScreen('scr-manifest-receiving-home');
+}
+
+// CHANGE 1: Render Manifest Receiving Home screen
+function renderManifestReceivingHome() {
+  if (!manifestSession) return;
+  const container = $('manifest-receiving-home-content');
+  if (!container) return;
+
+  const rowCount = manifestSession.rows ? manifestSession.rows.length : 0;
+
+  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+  html += '<div style="text-align:center">';
+  html += '<div style="font-size:48px;margin-bottom:12px">📋</div>';
+  html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Manifest Loaded</h2>';
+  html += '<p style="font-size:13px;color:var(--mu);margin-bottom:16px">Ready to begin receiving</p>';
+  html += '</div>';
+
+  html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px">';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+
+  html += '<div>';
+  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">File</div>';
+  html += '<div style="font-size:14px;font-weight:700">' + escapeHtml(manifestSession.fileName || 'manifest') + '</div>';
+  html += '</div>';
+
+  html += '<div>';
+  html += '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Rows</div>';
+  html += '<div style="font-size:14px;font-weight:700">' + rowCount + '</div>';
+  html += '</div>';
+
+  html += '</div>';
+  html += '</div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
+  html += '<button class="btn grn" onclick="openScanner()" ontouchend="event.preventDefault();openScanner()" style="margin-bottom:0">🔍 Scan Product</button>';
+  html += '<button class="btn grn" onclick="openPhotoIdentify()" ontouchend="event.preventDefault();openPhotoIdentify()" style="margin-bottom:0">📸 Identify by Photo</button>';
+  html += '<button class="btn grn" onclick="enterUpcManually()" ontouchend="event.preventDefault();enterUpcManually()" style="margin-bottom:0">⌨️ Enter UPC Manually</button>';
+  html += '<button class="btn sec" onclick="showOriginalManifest()" ontouchend="event.preventDefault();showOriginalManifest()" style="margin-bottom:0">📄 Show Original Manifest</button>';
+  html += '<button class="btn sec" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()" style="margin-bottom:0">🔄 Replace Manifest</button>';
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+// CHANGE 2: Show original manifest in full scrollable view
+function showOriginalManifest() {
+  if (!manifestSession) return;
+  renderOriginalManifestView();
+  showScreen('scr-manifest-original-view');
+}
+
+// CHANGE 6: Show original manifest during header detection (uses current globals)
+function showOriginalManifestFromHeader() {
+  renderOriginalManifestViewFromHeader();
+  showScreen('scr-manifest-original-view');
+}
+
+// CHANGE 3: Render original manifest view
+function renderOriginalManifestView() {
+  if (!manifestSession) return;
+  const container = $('manifest-original-view-content');
+  if (!container) return;
+
+  const rawRows = manifestSession.originalRawRows || [];
+  const sourceRowMap = manifestSession.originalSourceRowMap || {};
+
+  renderOriginalManifestTable(container, rawRows, sourceRowMap);
+}
+
+// CHANGE 6: Render original manifest during header detection
+function renderOriginalManifestViewFromHeader() {
+  const container = $('manifest-original-view-content');
+  if (!container) return;
+
+  const rawRows = currentRawRows || [];
+  const sourceRowMap = currentSourceRowMap || {};
+
+  renderOriginalManifestTable(container, rawRows, sourceRowMap);
+}
+
+// CHANGE 3: Helper to render manifest table
+function renderOriginalManifestTable(container, rawRows, sourceRowMap) {
+
+  let html = '<div style="overflow-x:auto;margin-bottom:20px">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+
+  // Header row
+  html += '<thead><tr style="background:var(--sf2);position:sticky;top:0">';
+  html += '<th style="padding:10px;border-bottom:1px solid var(--bd);text-align:left;font-weight:700;color:var(--ac);width:60px">Source</th>';
+
+  if (rawRows.length > 0) {
+    const maxCols = Math.max(...rawRows.map(r => r.length || 0));
+    for (let i = 0; i < maxCols; i++) {
+      html += '<th style="padding:10px;border-bottom:1px solid var(--bd);text-align:left;font-weight:700">' + 'Col ' + (i + 1) + '</th>';
+    }
+  }
+
+  html += '</tr></thead>';
+
+  // Data rows
+  html += '<tbody>';
+  rawRows.forEach((row, idx) => {
+    const sourceRowNum = sourceRowMap[idx] ?? (idx + 1);
+    html += '<tr style="border-bottom:1px solid var(--bd)">';
+    html += '<td style="padding:10px;background:var(--sf2);font-weight:700;color:var(--ac)">' + sourceRowNum + '</td>';
+
+    if (row && Array.isArray(row)) {
+      row.forEach((cell, colIdx) => {
+        const cellText = escapeHtml(String(cell || ''));
+        html += '<td style="padding:10px;border-left:1px solid var(--bd)">' + cellText + '</td>';
+      });
+    }
+
+    html += '</tr>';
+  });
+
+  html += '</tbody>';
+  html += '</table>';
+  html += '</div>';
+
+  container.innerHTML = html;
 }
 
 // Normalize rows with proper type handling and field parsing
@@ -3589,6 +3739,10 @@ window.runPhase1Tests = runPhase1Tests;
     <button class="btn grn" style="flex:1" onclick="confirmDetectedHeader()" ontouchend="event.preventDefault();confirmDetectedHeader()">✅ Use This Row</button>
     <button class="btn sec" style="flex:1" onclick="nextDetectedHeaderRow()" ontouchend="event.preventDefault();nextDetectedHeaderRow()">Next Row →</button>
   </div>
+  <!-- CHANGE 6: Add Show Full Manifest button during header setup -->
+  <div style="margin-top:12px">
+    <button class="btn sec" style="width:100%" onclick="showOriginalManifestFromHeader()" ontouchend="event.preventDefault();showOriginalManifestFromHeader()">📄 Show Full Manifest</button>
+  </div>
 </div>
 
 <div class="scr" id="scr-manifest-upload">
@@ -3635,6 +3789,22 @@ window.runPhase1Tests = runPhase1Tests;
   <div id="manifest-summary-content"></div>
 
   <div id="manifest-ready-msg" style="font-size:13px;color:var(--mu);text-align:center;min-height:16px;margin-bottom:12px"></div>
+</div>
+
+<!-- CHANGE 1: MANIFEST RECEIVING HOME SCREEN -->
+<div class="scr" id="scr-manifest-receiving-home">
+  <button class="btn sec" style="margin-bottom:12px" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">← Back</button>
+  <div id="manifest-receiving-home-content"></div>
+</div>
+
+<!-- CHANGE 3: ORIGINAL MANIFEST VIEW SCREEN -->
+<div class="scr" id="scr-manifest-original-view">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-manifest-receiving-home')" ontouchend="event.preventDefault();showScreen('scr-manifest-receiving-home')">← Back to Receiving</button>
+  <div style="margin-bottom:20px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Original Manifest</h2>
+    <p style="font-size:13px;color:var(--mu)">Full imported data</p>
+  </div>
+  <div id="manifest-original-view-content" style="overflow:auto;max-height:calc(100vh - 200px)"></div>
 </div>
 
 </body>
