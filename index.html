@@ -2093,6 +2093,9 @@ const SEMANTIC_FIELD_ALIASES = {
 // Session storage keys
 const MANIFEST_SESSION_V3_KEY = 'inventory_manifest_beta_session_v3';
 
+// Header detection state
+let detectedHeaderRowIndex = 0;
+
 // File type detection
 async function detectManifestFileType(file) {
   const ext = file.name.toLowerCase().split('.').pop();
@@ -2453,14 +2456,81 @@ window.selectSheetAndProceed = function(sheetName) {
   }
 };
 
-function proceedToHeaderDetectionFromImport(importResult, section) {
-  currentRawRows = section.rawRows;
-  currentSheetName = section.name;
-  currentSourceRowMap = section.sourceRowMap || {};  // ISSUE 2: Preserve sourceRowMap
-  currentImportFileType = importResult.fileType;      // ISSUE 4: Preserve actual file type
+// Header detection functions
+function normalizeHeaderName(name) {
+  return String(name || '')
+    .toUpperCase()
+    .trim()
+    .replace(/[^\w\s]/g, '');
+}
 
-  const detection = detectHeaderRow(currentRawRows);
-  renderHeaderDetectionPreview(detection.rowIndex);
+function scoreRowAsHeader(row) {
+  let score = 0;
+  const normalizedRow = row.map(normalizeHeaderName);
+
+  for (const aliases of Object.values(SEMANTIC_FIELD_ALIASES)) {
+    const matched = aliases.some(alias =>
+      normalizedRow.includes(normalizeHeaderName(alias))
+    );
+    if (matched) score += 10;
+  }
+
+  const hasIdentifier = normalizedRow.some(h =>
+    ['UPC', 'UPC NUMBER', 'SKU', 'ITEM', 'ITEM NUMBER', 'DESCRIPTION', 'TITLE']
+      .some(x => h.includes(normalizeHeaderName(x)))
+  );
+
+  const hasQty = normalizedRow.some(h =>
+    h.includes('QTY') || h.includes('QUANTITY')
+  );
+
+  if (hasIdentifier && hasQty) score += 20;
+
+  return score;
+}
+
+function detectHeaderRow(rawRows) {
+  let bestRow = 0;
+  let bestScore = -1;
+
+  for (let i = 0; i < Math.min(50, rawRows.length); i++) {
+    const row = rawRows[i];
+
+    if (!row || row.every(v => String(v || '').trim() === '')) {
+      continue;
+    }
+
+    const score = scoreRowAsHeader(row);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = i;
+    }
+  }
+
+  return {
+    rowIndex: bestRow,
+    score: bestScore
+  };
+}
+
+function proceedToHeaderDetectionFromImport(importResult, section) {
+  try {
+    currentRawRows = section.rawRows;
+    currentSheetName = section.name;
+    currentSourceRowMap = section.sourceRowMap || {};  // ISSUE 2: Preserve sourceRowMap
+    currentImportFileType = importResult.fileType;      // ISSUE 4: Preserve actual file type
+
+    const detection = detectHeaderRow(currentRawRows);
+    detectedHeaderRowIndex = detection.rowIndex;
+
+    renderHeaderDetectionPreview(detectedHeaderRowIndex);
+    showScreen('scr-manifest-header');
+
+  } catch (err) {
+    console.error('Header detection failed:', err);
+    toast('❌ Could not detect manifest header');
+  }
 }
 
 // Session v3 storage functions
