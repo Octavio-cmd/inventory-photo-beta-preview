@@ -3358,6 +3358,7 @@ function getManifestAllocationSummary(manifestSession) {
       totalExpected: 0,
       totalAssigned: 0,
       totalRemaining: 0,
+      totalOverage: 0,
       byDestination: {
         SAVVY: 0,
         DWI: 0,
@@ -3390,10 +3391,13 @@ function getManifestAllocationSummary(manifestSession) {
     }
   });
 
+  const totalOverage = Math.max(0, totalAssigned - totalExpected);
+
   return {
     totalExpected,
     totalAssigned,
     totalRemaining: Math.max(0, totalExpected - totalAssigned),
+    totalOverage,
     byDestination
   };
 }
@@ -3452,6 +3456,63 @@ function removeAllocation(manifestSession, recordId) {
   manifestSession.allocationRecords.splice(idx, 1);
   saveManifestSessionToStorageV3(manifestSession);
   return true;
+}
+
+function consolidateAllocationGroup(manifestSession, upc, records, newQuantity, destination) {
+  if (!manifestSession || !manifestSession.allocationRecords || records.length === 0) return null;
+
+  // Preserve unique union of source references
+  const manifestRowIds = [...new Set(records.flatMap(r => r.manifestRowIds || []))];
+  const sourceRowNumbers = [...new Set(records.flatMap(r => r.sourceRowNumbers || []))];
+
+  // Calculate expected quantity for this UPC across all destinations
+  const allAllocationsForUpc = manifestSession.allocationRecords.filter(r => r.upc === upc);
+  const currentAllocatedOtherDests = allAllocationsForUpc
+    .filter(r => r.destination !== destination)
+    .reduce((sum, r) => sum + r.quantity, 0);
+  const totalNewAssignment = newQuantity + currentAllocatedOtherDests;
+
+  // Find expected quantity from manifest
+  const expectedQty = manifestSession.rows
+    .filter(row => row.normalized && row.normalized.upc === upc)
+    .reduce((sum, row) => sum + (row.normalized.expectedQty || 0), 0);
+
+  const isOverage = totalNewAssignment > expectedQty;
+
+  // Create consolidated record directly with preserved metadata
+  const consolidatedRecord = {
+    id: 'alloc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    upc: upc || '',
+    sku: records[0]?.sku || '',
+    manifestRowIds: manifestRowIds,
+    sourceRowNumbers: sourceRowNumbers,
+    destination: destination,
+    quantity: parseInt(newQuantity) || 1,
+    identificationMethod: records[0]?.identificationMethod || 'barcode',
+    title: records[0]?.title || '',
+    category: records[0]?.category || '',
+    unitRetail: records[0]?.unitRetail || null,
+    notes: '',
+    // Overage tracking
+    isOverage: isOverage,
+    expectedQtyAtAllocation: expectedQty || null,
+    assignedBefore: records.reduce((sum, r) => sum + r.quantity, 0),
+    assignedAfter: totalNewAssignment,
+    editHistory: [
+      {
+        timestamp: new Date().toISOString(),
+        action: 'quantity_edit',
+        previousQuantity: records.reduce((sum, r) => sum + r.quantity, 0),
+        newQuantity: newQuantity
+      }
+    ]
+  };
+
+  manifestSession.allocationRecords.push(consolidatedRecord);
+  saveManifestSessionToStorageV3(manifestSession);
+  return consolidatedRecord;
 }
 
 function getDestinationManifestRows(manifestSession, destination) {
@@ -3604,25 +3665,8 @@ function editAllocationRow(upc, destination) {
     removeAllocation(manifestSession, record.id);
   });
 
-  // Create single consolidated record with new total quantity
-  const consolidatedRecord = recordAllocation(
-    manifestSession,
-    upc,
-    records[0].sku || '',
-    qty,
-    destination,
-    records[0].identificationMethod || 'barcode',
-    records.flatMap(r => r.manifestRowIds || []),
-    records[0].title || '',
-    records[0].category || '',
-    records[0].unitRetail || null,
-    {
-      isOverage: false,
-      expectedQty: records[0].expectedQtyAtAllocation || 0,
-      assignedBefore: records.reduce((sum, r) => sum + r.quantity, 0),
-      assignedAfter: qty
-    }
-  );
+  // Create single consolidated record with preserved source metadata and recalculated overage
+  const consolidatedRecord = consolidateAllocationGroup(manifestSession, upc, records, qty, destination);
 
   if (consolidatedRecord) {
     toast('✅ Updated to ' + qty);
