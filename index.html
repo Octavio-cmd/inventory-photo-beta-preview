@@ -2091,6 +2091,10 @@ function openManifestReceiving(){
   }
 }
 
+function backFromManifestReceiving(){
+  showScreen('scr-home');
+}
+
 function openManifestSummary(){
   if(!manifestSession || !manifestSession.rows.length){
     toast('⚠️ No active manifest');
@@ -2917,7 +2921,7 @@ function renderManifestReceivingHome() {
 
   html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
   html += '<button class="btn sec" onclick="showOriginalManifest()" ontouchend="event.preventDefault();showOriginalManifest()" style="margin-bottom:0">📄 Show Original Manifest</button>';
-  html += '<button class="btn sec" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()" style="margin-bottom:0">🔄 Replace Manifest</button>';
+  html += '<button class="btn sec" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()" style="margin-bottom:0">🔄 Upload New Manifest</button>';
   html += '</div>';
 
   container.innerHTML = html;
@@ -4227,8 +4231,13 @@ function renderManifestSummary(){
 function confirmReplaceManifest(){
   if(!manifestSession) return;
 
-  if(confirm('Replace the current manifest? Any receiving progress will be lost.')){
-    // ISSUE 2: Use active-session-aware clear
+  const summary = getManifestAllocationSummary(manifestSession);
+  let confirmMsg = 'Upload a new manifest? This will replace the current manifest and clear its receiving/allocation progress.';
+  if(summary.totalAssigned > 0){
+    confirmMsg += '\n\nCurrent progress: ' + summary.totalAssigned + ' units allocated across destinations will be lost.';
+  }
+
+  if(confirm(confirmMsg)){
     clearActiveManifestSession();
     showScreen('scr-manifest-upload');
     $('manifest-file-input').value = '';
@@ -5196,7 +5205,7 @@ window.runPhase1Tests = runPhase1Tests;
 
 <!-- CHANGE 1: MANIFEST RECEIVING HOME SCREEN -->
 <div class="scr" id="scr-manifest-receiving-home">
-  <button class="btn sec" style="margin-bottom:12px" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">← Back</button>
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromManifestReceiving()" ontouchend="event.preventDefault();backFromManifestReceiving()">← Back to Inventory</button>
   <div id="manifest-receiving-home-content"></div>
 </div>
 
