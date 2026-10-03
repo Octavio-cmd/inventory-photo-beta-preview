@@ -2735,13 +2735,21 @@ function renderColumnMappingV2() {
       aliases.some(a => normalizeHeaderName(a) === normalizeHeaderName(h))
     );
 
+    // FIX 1: Auto-suggestion must update state
+    if (suggested && !manifestSession.mapping[field.key]) {
+      manifestSession.mapping[field.key] = suggested;
+    }
+
+    // FIX 2: Render from actual state
+    const selectedValue = manifestSession.mapping[field.key] || suggested || '';
+
     html += `
       <div class="manifest-mapping-row">
         <div class="manifest-mapping-label">${field.label}</div>
         <select class="manifest-mapping-select" id="map-${field.key}" onchange="updateMapping('${field.key}', this.value)">
           <option value="">— Not Present —</option>
           ${manifestSession.rawHeaders.map(h => `
-            <option value="${escapeHtml(h)}" ${suggested === h ? 'selected' : ''}>${escapeHtml(h)}</option>
+            <option value="${escapeHtml(h)}" ${selectedValue === h ? 'selected' : ''}>${escapeHtml(h)}</option>
           `).join('')}
         </select>
       </div>
