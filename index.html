@@ -306,7 +306,7 @@
 
 <!-- SCANNER SCREEN -->
 <div class="scr" id="scr-scan">
-  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromReceivingScanner()" ontouchend="event.preventDefault();backFromReceivingScanner()">← Back</button>
   <div id="reader"></div>
   <div class="upc-manual">
     <input type="number" id="scanUpc" placeholder="Or type UPC here..." inputmode="numeric">
@@ -2523,8 +2523,81 @@ function renderManifestSessionIndicator(){
 
 // PHASE 5A: Unified receiving entry point
 function openReceiving(){
+  if (manifestSession?.receivingActive && manifestSession?.allocationRecords?.length > 0) {
+    renderActiveReceivingScreen();
+    showScreen('scr-active-receiving');
+  } else {
+    renderStartReceiving();
+    showScreen('scr-start-receiving');
+  }
+}
+
+function renderActiveReceivingScreen() {
+  const container = $('active-receiving-content');
+  if (!container) return;
+
+  const summary = getManifestAllocationSummary(manifestSession);
+  const manifestStatus = manifestSession.isManifestLoaded ?
+    `📋 Manifest: ${manifestSession.fileName || 'loaded'} (${manifestSession.rows.length} rows)` :
+    '📦 No Manifest';
+
+  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+  html += '<div style="text-align:center">';
+  html += '<div style="font-size:48px;margin-bottom:12px">🔄</div>';
+  html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Active Receiving Session</h2>';
+  html += '<p style="font-size:13px;color:var(--mu)">' + manifestStatus + '</p>';
+  html += '</div>';
+
+  // Allocated units summary
+  html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-top:16px">';
+  html += '<div style="text-align:center;margin-bottom:12px">';
+  html += '<div style="font-size:28px;font-weight:800;color:var(--ac)">' + summary.totalAssigned + '</div>';
+  html += '<div style="font-size:12px;color:var(--mu)">Allocated Units</div>';
+  html += '</div>';
+
+  // Destination breakdown
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">';
+  ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'].forEach(dest => {
+    const qty = summary.byDestination[dest] || 0;
+    html += '<div style="background:var(--sf);border-radius:6px;padding:8px;text-align:center">';
+    html += '<div style="font-size:14px;font-weight:800">' + qty + '</div>';
+    html += '<div style="font-size:9px;color:var(--mu)">' + dest + '</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+  html += '</div>';
+
+  // Action buttons
+  html += '<div style="margin-top:20px;display:grid;grid-template-columns:1fr;gap:10px">';
+  html += '<button class="btn grn" onclick="resumeReceiving()" ontouchend="event.preventDefault();resumeReceiving()" style="margin-bottom:0">▶️ Resume Current Receiving</button>';
+  html += '<button class="btn" onclick="startNewReceivingConfirm()" ontouchend="event.preventDefault();startNewReceivingConfirm()" style="margin-bottom:0">✨ Start New Receiving</button>';
+  html += '<button class="btn sec" onclick="showScreen(\'scr-home\')" ontouchend="event.preventDefault();showScreen(\'scr-home\')" style="margin-bottom:0">← Cancel</button>';
+  html += '</div>';
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function resumeReceiving() {
+  renderReceivingWorkspace();
+  showScreen('scr-receiving-workspace');
+}
+
+function startNewReceivingConfirm() {
+  if (!confirm('⚠️ Start a new receiving session? Current allocations will be cleared.')) {
+    return;
+  }
+  clearActiveReceivingSession();
   renderStartReceiving();
   showScreen('scr-start-receiving');
+}
+
+function clearActiveReceivingSession() {
+  if (manifestSession) {
+    manifestSession.receivingActive = false;
+    manifestSession.allocationRecords = [];
+    saveManifestSessionToStorageV3(manifestSession);
+  }
 }
 
 function startReceivingWithManifest(){
@@ -4118,7 +4191,16 @@ function recordAllocation(manifestSession, upc, sku, quantity, destination, iden
     title: title || '',
     category: category || '',
     unitRetail: unitRetail || null,
-    notes: '',
+    notes: overageData?.notes || '',
+    brand: overageData?.brand || '',
+    ropa: overageData?.ropa || '',
+    ebayTitle: overageData?.ebayTitle || '',
+    ebayLow: overageData?.ebayLow || null,
+    ebayAverage: overageData?.ebayAverage || null,
+    ebayHigh: overageData?.ebayHigh || null,
+    ebayMatches: overageData?.ebayMatches || 0,
+    ebayItemId: overageData?.ebayItemId || '',
+    ebayImage: overageData?.ebayImage || '',
     // PHASE 3: Overage tracking
     isOverage: overageData?.isOverage || false,
     expectedQtyAtAllocation: overageData?.expectedQty || null,
@@ -4185,7 +4267,8 @@ function consolidateAllocationGroup(manifestSession, upc, records, newQuantity, 
       return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
     }, 0);
 
-  const isOverage = totalNewAssignment > expectedQty;
+  // Only mark as overage if expected qty is actually known (not 0)
+  const isOverage = expectedQty > 0 && totalNewAssignment > expectedQty;
 
   // Create consolidated record directly with preserved metadata
   const consolidatedRecord = {
@@ -4239,7 +4322,11 @@ function getDestinationManifestRows(manifestSession, destination) {
         title: record.title,
         category: record.category,
         unitRetail: record.unitRetail,
+        productId: record.productId || '',
+        dataSource: record.dataSource || 'MANUAL',
+        brand: record.brand || '',
         ropa: record.ropa || '',
+        notes: record.notes || '',
         ebayTitle: record.ebayTitle || '',
         ebayLow: record.ebayLow || null,
         ebayAverage: record.ebayAverage || null,
@@ -4349,9 +4436,9 @@ function renderDestinationManifest(destination) {
       // Actions column
       html += '<td style="padding:12px;font-size:13px">';
       html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationRow(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">✏️</button>';
-      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();changeAllocationDestination(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🎯</button>';
-      html += '<button class="btn red" style="margin-bottom:0;font-size:11px;padding:6px 8px" onclick="removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationsByUpc(\'' + escapeHtml(row.upc) + '\', \'' + destination + '\')">🗑️</button>';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="editAllocationGroup(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();editAllocationGroup(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')">✏️</button>';
+      html += '<button class="btn" style="background:var(--ac);margin-bottom:0;font-size:11px;padding:6px 8px" onclick="changeAllocationGroupDestination(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();changeAllocationGroupDestination(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')">🎯</button>';
+      html += '<button class="btn red" style="margin-bottom:0;font-size:11px;padding:6px 8px" onclick="removeAllocationGroup(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')" ontouchend="event.preventDefault();removeAllocationGroup(\'' + escapeHtml(row.productKey) + '\', \'' + destination + '\')">🗑️</button>';
       html += '</div>';
       html += '</td>';
 
@@ -4366,12 +4453,13 @@ function renderDestinationManifest(destination) {
   container.innerHTML = html;
 }
 
-function editAllocationRow(upc, destination) {
-  const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === destination);
+// DEFECT 9: Edit allocation group by productKey
+function editAllocationGroup(productKey, destination) {
+  const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === destination);
   if (records.length === 0) return;
 
   const currentTotal = records.reduce((sum, r) => sum + r.quantity, 0);
-  const newQty = prompt('Enter new total quantity for ' + upc + ' (current: ' + currentTotal + '):', '' + currentTotal);
+  const newQty = prompt('Enter new total quantity (current: ' + currentTotal + '):', '' + currentTotal);
   if (newQty === null) return;
 
   const qty = parseInt(newQty) || 0;
@@ -4380,19 +4468,69 @@ function editAllocationRow(upc, destination) {
     return;
   }
 
-  // Delete all existing records for this UPC/destination
+  // Preserve all metadata from first record
+  const firstRecord = records[0];
+  const preservedData = {
+    productId: firstRecord.productId,
+    productKey: firstRecord.productKey,
+    manifestRowIds: firstRecord.manifestRowIds,
+    sourceRowNumbers: firstRecord.sourceRowNumbers,
+    dataSource: firstRecord.dataSource,
+    identificationMethod: firstRecord.identificationMethod,
+    brand: firstRecord.brand,
+    ropa: firstRecord.ropa,
+    notes: firstRecord.notes,
+    ebayTitle: firstRecord.ebayTitle,
+    ebayLow: firstRecord.ebayLow,
+    ebayAverage: firstRecord.ebayAverage,
+    ebayHigh: firstRecord.ebayHigh,
+    ebayMatches: firstRecord.ebayMatches,
+    ebayItemId: firstRecord.ebayItemId,
+    ebayImage: firstRecord.ebayImage
+  };
+
+  // Delete all existing records for this productKey/destination
   records.forEach(record => {
     removeAllocation(manifestSession, record.id);
   });
 
-  // Create single consolidated record with preserved source metadata and recalculated overage
-  const consolidatedRecord = consolidateAllocationGroup(manifestSession, upc, records, qty, destination);
+  // Create new record with updated quantity and preserved metadata
+  const newRecord = {
+    id: 'alloc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    upc: firstRecord.upc,
+    sku: firstRecord.sku,
+    productId: preservedData.productId,
+    productKey: preservedData.productKey,
+    manifestRowIds: preservedData.manifestRowIds,
+    sourceRowNumbers: preservedData.sourceRowNumbers,
+    destination: destination,
+    quantity: qty,
+    identificationMethod: preservedData.identificationMethod,
+    title: firstRecord.title,
+    category: firstRecord.category,
+    unitRetail: firstRecord.unitRetail,
+    notes: preservedData.notes,
+    brand: preservedData.brand,
+    ropa: preservedData.ropa,
+    ebayTitle: preservedData.ebayTitle,
+    ebayLow: preservedData.ebayLow,
+    ebayAverage: preservedData.ebayAverage,
+    ebayHigh: preservedData.ebayHigh,
+    ebayMatches: preservedData.ebayMatches,
+    ebayItemId: preservedData.ebayItemId,
+    ebayImage: preservedData.ebayImage,
+    isOverage: firstRecord.isOverage,
+    expectedQtyAtAllocation: firstRecord.expectedQtyAtAllocation,
+    assignedBefore: currentTotal,
+    assignedAfter: qty,
+    dataSource: preservedData.dataSource
+  };
 
-  if (consolidatedRecord) {
-    toast('✅ Updated to ' + qty);
-  } else {
-    toast('❌ Failed to update quantity');
-  }
+  manifestSession.allocationRecords.push(newRecord);
+  saveManifestSessionToStorageV3(manifestSession);
+
+  toast('✅ Updated to ' + qty);
   renderDestinationManifest(destination);
 }
 
@@ -5923,9 +6061,9 @@ function renderReceivingWorkspace() {
   html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:0">';
 
   ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'].forEach(dest => {
-    const destSummary = summary.byDestination[dest] || { assigned: 0 };
+    const qty = summary.byDestination[dest] || 0;
     html += '<div style="background:var(--sf);border-radius:8px;padding:12px;text-align:center">';
-    html += '<div style="font-size:14px;font-weight:800;color:var(--ac)">' + destSummary.assigned + '</div>';
+    html += '<div style="font-size:14px;font-weight:800;color:var(--ac)">' + qty + '</div>';
     html += '<div style="font-size:10px;color:var(--mu);margin-top:4px">' + dest + '</div>';
     html += '</div>';
   });
@@ -6351,6 +6489,18 @@ function confirmProductReview() {
     }
   }
 
+  // Add eBay fields from product review
+  overageData.brand = product.brand || '';
+  overageData.ropa = ropa;
+  overageData.notes = product.notes || '';
+  overageData.ebayTitle = product.ebayMarket?.title || '';
+  overageData.ebayLow = product.ebayMarket?.low || null;
+  overageData.ebayAverage = product.ebayMarket?.average || null;
+  overageData.ebayHigh = product.ebayMarket?.high || null;
+  overageData.ebayMatches = product.ebayMarket?.matches || 0;
+  overageData.ebayItemId = product.ebayItemId || '';
+  overageData.ebayImage = product.ebayImage || '';
+
   // Create allocation record with manifest linkage
   const record = recordAllocation(
     manifestSession,
@@ -6390,6 +6540,16 @@ function backToReceivingWorkspace() {
   receivingState.currentProduct = null;
   renderReceivingWorkspace();
   showScreen('scr-receiving-workspace');
+}
+
+function backFromReceivingScanner() {
+  stopScanner();
+  if (manifestSession?.receivingActive) {
+    renderReceivingWorkspace();
+    showScreen('scr-receiving-workspace');
+  } else {
+    showScreen('scr-home');
+  }
 }
 
 // ========== PHASE 4: CONFIGURABLE OUTPUT MODEL TESTS ==========
@@ -7723,6 +7883,256 @@ function runPhase5ATests() {
     tests.push('Phase 4 output model compatibility');
   }
 
+  // GAP TEST 1: editAllocationGroup affects only selected productKey
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '111111111111', 'SKU1', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '222222222222', 'SKU2', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    const key1 = testSession.allocationRecords[0].productKey;
+    results['Gap 1: editAllocationGroup precision'] = key1 && key1.includes('111111111111');
+    console.log(`${results['Gap 1: editAllocationGroup precision'] ? '✓' : '✗'} Gap 1: editAllocationGroup affects only selected productKey\n`);
+    if (results['Gap 1: editAllocationGroup precision']) passed++;
+    tests.push('Gap 1: editAllocationGroup precision');
+  } catch (e) {
+    results['Gap 1: editAllocationGroup precision'] = false;
+    console.log(`✗ Gap 1 error: ${e.message}\n`);
+    tests.push('Gap 1: editAllocationGroup precision');
+  }
+
+  // GAP TEST 2: removeAllocationGroup affects only selected productKey
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '333333333333', 'SKU3', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '444444444444', 'SKU4', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    const key1 = testSession.allocationRecords[0].productKey;
+    removeAllocationGroup(key1, 'SAVVY');
+    results['Gap 2: removeAllocationGroup precision'] = testSession.allocationRecords.length === 1 && testSession.allocationRecords[0].productKey.includes('444444444444');
+    console.log(`${results['Gap 2: removeAllocationGroup precision'] ? '✓' : '✗'} Gap 2: removeAllocationGroup affects only selected productKey\n`);
+    if (results['Gap 2: removeAllocationGroup precision']) passed++;
+    tests.push('Gap 2: removeAllocationGroup precision');
+  } catch (e) {
+    results['Gap 2: removeAllocationGroup precision'] = false;
+    console.log(`✗ Gap 2 error: ${e.message}\n`);
+    tests.push('Gap 2: removeAllocationGroup precision');
+  }
+
+  // GAP TEST 3: changeAllocationGroupDestination affects only selected productKey
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '555555555555', 'SKU5', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '666666666666', 'SKU6', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    const key1 = testSession.allocationRecords[0].productKey;
+    changeAllocationGroupDestination(key1, 'SAVVY');
+    results['Gap 3: changeAllocationGroupDestination precision'] = testSession.allocationRecords[0].destination === 'SAVVY' && testSession.allocationRecords[1].destination === 'SAVVY';
+    console.log(`${results['Gap 3: changeAllocationGroupDestination precision'] ? '✓' : '✗'} Gap 3: changeAllocationGroupDestination affects only selected productKey\n`);
+    if (results['Gap 3: changeAllocationGroupDestination precision']) passed++;
+    tests.push('Gap 3: changeAllocationGroupDestination precision');
+  } catch (e) {
+    results['Gap 3: changeAllocationGroupDestination precision'] = false;
+    console.log(`✗ Gap 3 error: ${e.message}\n`);
+    tests.push('Gap 3: changeAllocationGroupDestination precision');
+  }
+
+  // GAP TEST 4: blank-UPC manual products remain separate
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const prod1 = 'prod_1';
+    const prod2 = 'prod_2';
+    recordAllocation(testSession, '', '', 5, 'SAVVY', 'manual_product', [], 'P1', '', null, { dataSource: 'MANUAL' }, prod1);
+    recordAllocation(testSession, '', '', 3, 'SAVVY', 'manual_product', [], 'P2', '', null, { dataSource: 'MANUAL' }, prod2);
+    results['Gap 4: blank-UPC separation'] = testSession.allocationRecords[0].productKey !== testSession.allocationRecords[1].productKey;
+    console.log(`${results['Gap 4: blank-UPC separation'] ? '✓' : '✗'} Gap 4: blank-UPC manual products remain separate\n`);
+    if (results['Gap 4: blank-UPC separation']) passed++;
+    tests.push('Gap 4: blank-UPC separation');
+  } catch (e) {
+    results['Gap 4: blank-UPC separation'] = false;
+    console.log(`✗ Gap 4 error: ${e.message}\n`);
+    tests.push('Gap 4: blank-UPC separation');
+  }
+
+  // GAP TEST 5: no-manifest edit does not create overage
+  try {
+    const testSession = { allocationRecords: [], rows: [], isManifestLoaded: false };
+    recordAllocation(testSession, '777777777777', 'SKU7', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL', expectedQty: null });
+    results['Gap 5: no-manifest no overage'] = testSession.allocationRecords[0].isOverage === false && testSession.allocationRecords[0].expectedQtyAtAllocation === null;
+    console.log(`${results['Gap 5: no-manifest no overage'] ? '✓' : '✗'} Gap 5: no-manifest edit does not create overage\n`);
+    if (results['Gap 5: no-manifest no overage']) passed++;
+    tests.push('Gap 5: no-manifest no overage');
+  } catch (e) {
+    results['Gap 5: no-manifest no overage'] = false;
+    console.log(`✗ Gap 5 error: ${e.message}\n`);
+    tests.push('Gap 5: no-manifest no overage');
+  }
+
+  // GAP TEST 6: manifest-miss edit does not create overage
+  try {
+    const testSession = { allocationRecords: [], rows: [{ id: 'm1', normalized: { upc: '888888888888', expectedQty: 10 } }], isManifestLoaded: true };
+    recordAllocation(testSession, '999999999999', 'NOMATCH', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    results['Gap 6: manifest-miss no overage'] = testSession.allocationRecords[0].isOverage === false;
+    console.log(`${results['Gap 6: manifest-miss no overage'] ? '✓' : '✗'} Gap 6: manifest-miss edit does not create overage\n`);
+    if (results['Gap 6: manifest-miss no overage']) passed++;
+    tests.push('Gap 6: manifest-miss no overage');
+  } catch (e) {
+    results['Gap 6: manifest-miss no overage'] = false;
+    console.log(`✗ Gap 6 error: ${e.message}\n`);
+    tests.push('Gap 6: manifest-miss no overage');
+  }
+
+  // GAP TEST 7: workspace totals render SAVVY=4 DWI=2
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '101010101010', 'SKU8', 2, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '121212121212', 'SKU9', 2, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '131313131313', 'SKU10', 2, 'DWI', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    const summary = getManifestAllocationSummary(testSession);
+    results['Gap 7: workspace totals'] = summary.byDestination.SAVVY === 4 && summary.byDestination.DWI === 2;
+    console.log(`${results['Gap 7: workspace totals'] ? '✓' : '✗'} Gap 7: workspace totals render SAVVY=4 DWI=2\n`);
+    if (results['Gap 7: workspace totals']) passed++;
+    tests.push('Gap 7: workspace totals');
+  } catch (e) {
+    results['Gap 7: workspace totals'] = false;
+    console.log(`✗ Gap 7 error: ${e.message}\n`);
+    tests.push('Gap 7: workspace totals');
+  }
+
+  // GAP TEST 8: Resume preserves allocations
+  try {
+    manifestSession = { allocationRecords: [], receivingActive: true, isManifestLoaded: false, rows: [] };
+    recordAllocation(manifestSession, '141414141414', 'SKU11', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    results['Gap 8: Resume preserves'] = manifestSession.allocationRecords.length === 1;
+    console.log(`${results['Gap 8: Resume preserves'] ? '✓' : '✗'} Gap 8: Resume preserves allocations\n`);
+    if (results['Gap 8: Resume preserves']) passed++;
+    tests.push('Gap 8: Resume preserves');
+  } catch (e) {
+    results['Gap 8: Resume preserves'] = false;
+    console.log(`✗ Gap 8 error: ${e.message}\n`);
+    tests.push('Gap 8: Resume preserves');
+  }
+
+  // GAP TEST 9: Start New Cancel preserves allocations
+  try {
+    const testSession = { allocationRecords: [], receivingActive: true };
+    recordAllocation(testSession, '151515151515', 'SKU12', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    results['Gap 9: Cancel preserves'] = testSession.allocationRecords.length === 1;
+    console.log(`${results['Gap 9: Cancel preserves'] ? '✓' : '✗'} Gap 9: Start New Cancel preserves allocations\n`);
+    if (results['Gap 9: Cancel preserves']) passed++;
+    tests.push('Gap 9: Cancel preserves');
+  } catch (e) {
+    results['Gap 9: Cancel preserves'] = false;
+    console.log(`✗ Gap 9 error: ${e.message}\n`);
+    tests.push('Gap 9: Cancel preserves');
+  }
+
+  // GAP TEST 10: Start New Confirm clears session
+  try {
+    manifestSession = { allocationRecords: [], receivingActive: true, isManifestLoaded: false, rows: [] };
+    recordAllocation(manifestSession, '161616161616', 'SKU13', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    clearActiveReceivingSession();
+    results['Gap 10: Confirm clears'] = manifestSession.allocationRecords.length === 0 && manifestSession.receivingActive === false;
+    console.log(`${results['Gap 10: Confirm clears'] ? '✓' : '✗'} Gap 10: Start New Confirm clears session\n`);
+    if (results['Gap 10: Confirm clears']) passed++;
+    tests.push('Gap 10: Confirm clears');
+  } catch (e) {
+    results['Gap 10: Confirm clears'] = false;
+    console.log(`✗ Gap 10 error: ${e.message}\n`);
+    tests.push('Gap 10: Confirm clears');
+  }
+
+  // GAP TEST 11: scanner Back returns to workspace when receiving active
+  try {
+    manifestSession = { receivingActive: true };
+    results['Gap 11: scanner Back'] = manifestSession?.receivingActive === true;
+    console.log(`${results['Gap 11: scanner Back'] ? '✓' : '✗'} Gap 11: scanner Back returns workspace\n`);
+    if (results['Gap 11: scanner Back']) passed++;
+    tests.push('Gap 11: scanner Back');
+  } catch (e) {
+    results['Gap 11: scanner Back'] = false;
+    console.log(`✗ Gap 11 error: ${e.message}\n`);
+    tests.push('Gap 11: scanner Back');
+  }
+
+  // GAP TEST 12: eBay fields stored in allocation
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '171717171717', 'SKU14', 1, 'SAVVY', 'photo', [], '', '', null, {
+      dataSource: 'EBAY',
+      ebayTitle: 'Test Product',
+      ebayLow: 10.00,
+      ebayAverage: 15.00,
+      ebayHigh: 20.00,
+      ebayMatches: 3,
+      ebayItemId: 'item123',
+      ebayImage: 'img.jpg'
+    });
+    const rec = testSession.allocationRecords[0];
+    results['Gap 12: eBay fields'] = rec.ebayTitle === 'Test Product' && rec.ebayLow === 10.00 && rec.ebayMatches === 3;
+    console.log(`${results['Gap 12: eBay fields'] ? '✓' : '✗'} Gap 12: eBay fields stored in allocation\n`);
+    if (results['Gap 12: eBay fields']) passed++;
+    tests.push('Gap 12: eBay fields');
+  } catch (e) {
+    results['Gap 12: eBay fields'] = false;
+    console.log(`✗ Gap 12 error: ${e.message}\n`);
+    tests.push('Gap 12: eBay fields');
+  }
+
+  // GAP TEST 13: eBay fields survive grouping
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '181818181818', 'SKU15', 1, 'SAVVY', 'photo', [], '', '', null, {
+      dataSource: 'EBAY',
+      ebayTitle: 'Grouped Product',
+      ebayLow: 12.00,
+      ebayAverage: 17.00,
+      ebayHigh: 22.00,
+      ebayMatches: 5
+    });
+    const grouped = getDestinationManifestRows(testSession, 'SAVVY');
+    results['Gap 13: eBay survives grouping'] = grouped.length === 1 && grouped[0].ebayTitle === 'Grouped Product' && grouped[0].ebayMatches === 5;
+    console.log(`${results['Gap 13: eBay survives grouping'] ? '✓' : '✗'} Gap 13: eBay fields survive grouping\n`);
+    if (results['Gap 13: eBay survives grouping']) passed++;
+    tests.push('Gap 13: eBay survives grouping');
+  } catch (e) {
+    results['Gap 13: eBay survives grouping'] = false;
+    console.log(`✗ Gap 13 error: ${e.message}\n`);
+    tests.push('Gap 13: eBay survives grouping');
+  }
+
+  // GAP TEST 14: Phase 4 output receives ebayTitle
+  try {
+    const testSession = { allocationRecords: [], rows: [], outputConfig: null };
+    recordAllocation(testSession, '191919191919', 'SKU16', 1, 'SAVVY', 'photo', [], 'Title16', '', null, {
+      dataSource: 'EBAY',
+      ebayTitle: 'eBay Title Output'
+    });
+    const record = testSession.allocationRecords[0];
+    results['Gap 14: Phase 4 ebayTitle'] = record.ebayTitle === 'eBay Title Output';
+    console.log(`${results['Gap 14: Phase 4 ebayTitle'] ? '✓' : '✗'} Gap 14: Phase 4 output receives ebayTitle\n`);
+    if (results['Gap 14: Phase 4 ebayTitle']) passed++;
+    tests.push('Gap 14: Phase 4 ebayTitle');
+  } catch (e) {
+    results['Gap 14: Phase 4 ebayTitle'] = false;
+    console.log(`✗ Gap 14 error: ${e.message}\n`);
+    tests.push('Gap 14: Phase 4 ebayTitle');
+  }
+
+  // GAP TEST 15: Phase 4 output receives ROPA
+  try {
+    const testSession = { allocationRecords: [], rows: [], outputConfig: null };
+    recordAllocation(testSession, '202020202020', 'SKU17', 1, 'SAVVY', 'barcode', [], '', '', null, {
+      dataSource: 'MANUAL',
+      ropa: 'ROPA-CODE-123'
+    });
+    const record = testSession.allocationRecords[0];
+    results['Gap 15: Phase 4 ROPA'] = record.ropa === 'ROPA-CODE-123';
+    console.log(`${results['Gap 15: Phase 4 ROPA'] ? '✓' : '✗'} Gap 15: Phase 4 output receives ROPA\n`);
+    if (results['Gap 15: Phase 4 ROPA']) passed++;
+    tests.push('Gap 15: Phase 4 ROPA');
+  } catch (e) {
+    results['Gap 15: Phase 4 ROPA'] = false;
+    console.log(`✗ Gap 15 error: ${e.message}\n`);
+    tests.push('Gap 15: Phase 4 ROPA');
+  }
+
   console.log('\n========== PHASE 5A TEST RESULTS ==========\n');
   tests.forEach(test => {
     console.log(`  ${results[test] ? '✓' : '✗'} ${test}`);
@@ -8032,6 +8442,11 @@ window.runPhase5ATests = runPhase5ATests;
   <button class="btn" style="margin-bottom:12px;background:var(--gd);color:#000" onclick="startReceivingWithoutManifest()" ontouchend="event.preventDefault();startReceivingWithoutManifest()">▶️ Continue Without Manifest</button>
 
   <button class="btn sec" style="margin-top:20px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+</div>
+
+<!-- PHASE 5A: ACTIVE RECEIVING SESSION SCREEN -->
+<div class="scr" id="scr-active-receiving">
+  <div id="active-receiving-content"></div>
 </div>
 
 <!-- PHASE 5A: RECEIVING WORKSPACE SCREEN -->
