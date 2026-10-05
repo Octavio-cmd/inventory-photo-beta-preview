@@ -286,10 +286,10 @@
     <p>Take or upload a photo to find a possible match</p>
   </div>
 
-  <div class="manifest-card" onclick="openManifestReceiving()" ontouchend="event.preventDefault();openManifestReceiving()">
-    <div class="icon">📋</div>
-    <h2>Manifest Receiving<span class="beta-tag">BETA</span></h2>
-    <p>Upload a manifest and reconcile received inventory</p>
+  <div class="manifest-card" onclick="openReceiving()" ontouchend="event.preventDefault();openReceiving()">
+    <div class="icon">📦</div>
+    <h2>Receiving<span class="beta-tag">BETA</span></h2>
+    <p>Receive inventory with optional manifest</p>
   </div>
 
   <div id="manifest-session-indicator"></div>
@@ -595,8 +595,23 @@ function searchFromScan(){
   const v = $('scanUpc').value.trim();
   if(!v){ toast('⚠️ Enter a UPC'); return; }
   stopScanner();
-  // PHASE 2: If manifest is active, use manifest-first search
-  if (manifestSession && manifestSession.status === 'ready') {
+
+  // PHASE 5A: If in unified receiving, use product review flow
+  if (manifestSession && manifestSession.receivingActive) {
+    receivingState.currentProduct = {
+      upc: v,
+      sku: '',
+      description: '',
+      qty: 1,
+      retail: null,
+      ropa: '',
+      notes: '',
+      identificationMethod: 'barcode',
+      source: manifestSession.isManifestLoaded ? 'MANIFEST' : 'MANUAL'
+    };
+    renderProductReview();
+    showScreen('scr-product-review');
+  } else if (manifestSession && manifestSession.status === 'ready') {
     searchReceivingProduct(v, 'barcode');
   } else {
     searchUPC(v);
@@ -606,6 +621,15 @@ function searchFromScan(){
 function searchManual(){
   const v = $('manualUpc').value.trim();
   if(!v){ toast('⚠️ Enter a UPC or SKU'); return; }
+
+  // PHASE 5A: If in unified receiving, route to Entry screen
+  if (manifestSession && manifestSession.receivingActive) {
+    receivingState.identificationMethod = 'upc-sku';
+    $('upc-sku-entry-input').value = v;
+    submitUpcSkuEntry();
+    return;
+  }
+
   // PHASE 2: If manifest is active, use manifest-first search
   if (manifestSession && manifestSession.status === 'ready') {
     searchReceivingProduct(v, 'manual_upc');
@@ -1880,6 +1904,35 @@ async function selectPhotoCandidate(itemId, rank){
       return;
     }
 
+    // PHASE 5A: If in receiving mode, use product review flow
+    if (manifestSession && manifestSession.receivingActive) {
+      // Photo verification result data
+      const title = data.title || data.productName || '';
+      const imageUrl = data.imageUrl || '';
+      const upc = data.upc ? String(data.upc) : '';
+      const sku = data.sku || '';
+      const price = data.price || null;
+
+      receivingState.currentProduct = {
+        upc: upc,
+        sku: sku,
+        description: title,
+        qty: 1,
+        retail: price,
+        ropa: '',
+        notes: '',
+        identificationMethod: 'photo',
+        source: 'MANUAL',
+        imageUrl: imageUrl,
+        itemId: itemId
+      };
+
+      renderProductReview();
+      showScreen('scr-product-review');
+      sendPhotoFeedback('photo_receiving_used');
+      return;
+    }
+
     if(data.verified && data.upc){
       // Backend verified the candidate has a valid, checksum-valid GTIN.
       // Now use the shared searchUPC() path (same as barcode/manual entry)
@@ -2004,6 +2057,14 @@ function submitManifestManualUpc() {
 const MANIFEST_STORAGE_KEY = 'inventory_manifest_beta_session_v2';
 
 let manifestSession = null;
+
+// Phase 5A: Receiving state for unified workflow
+let receivingState = {
+  currentScreen: 'start-receiving',  // start-receiving, receiving-workspace, product-review, manual-product-entry
+  currentProduct: null,  // { upc, sku, description, qty, retail, ropa, notes, identificationMethod, source, imageUrl }
+  manifestMatchInfo: null,  // { matched, manifestRow, alternatives } or null
+  pendingAllocation: null  // { product, quantity, destination }
+};
 
 // PHASE 4: Configurable output data model
 const DEFAULT_OUTPUT_COLUMNS = [
@@ -2378,11 +2439,56 @@ function renderManifestSessionIndicator(){
   }
 }
 
+// PHASE 5A: Unified receiving entry point
+function openReceiving(){
+  renderStartReceiving();
+  showScreen('scr-start-receiving');
+}
+
+function startReceivingWithManifest(){
+  showScreen('scr-manifest-upload');
+}
+
+function startReceivingWithoutManifest(){
+  // Create no-manifest session
+  manifestSession = {
+    version: 3,
+    id: generateSessionId(),
+    fileName: '',
+    fileType: '',
+    sheetName: null,
+    uploadedAt: new Date().toISOString(),
+    headerRowIndex: -1,
+    sourceHeaderRowNumber: 0,
+    rawHeaders: [],
+    originalRawRows: [],
+    originalSourceRowMap: {},
+    mapping: {},
+    rows: [],
+    status: 'ready',
+    receivedRecords: [],
+    allocationRecords: [],
+    receivingActive: true,
+    isManifestLoaded: false
+  };
+
+  ensureOutputConfig(manifestSession);
+  saveManifestSessionToStorageV3(manifestSession);
+  renderReceivingWorkspace();
+  showScreen('scr-receiving-workspace');
+}
+
+function renderStartReceiving(){
+  // Start receiving screen is simple, just show the options
+  // Actual UI is in the HTML
+}
+
+// Old manifest receiving function - kept for compatibility
 function openManifestReceiving(){
   if(manifestSession && manifestSession.status === 'ready'){
-    // CHANGE 1: Route to Receiving Home after manifest is ready
-    renderManifestReceivingHome();
-    showScreen('scr-manifest-receiving-home');
+    // Route to Receiving Workspace
+    renderReceivingWorkspace();
+    showScreen('scr-receiving-workspace');
   } else if(manifestSession && manifestSession.status === 'mapping'){
     openManifestSummary();
   } else {
@@ -3137,6 +3243,10 @@ function submitManifestMapping() {
   ensureOutputConfig(manifestSession);
   manifestSession.status = 'ready';
 
+  // PHASE 5A: Set flags for unified receiving
+  manifestSession.isManifestLoaded = true;
+  manifestSession.receivingActive = true;
+
   // ISSUE 6: For Universal Importer v3, save ONLY to v3 key (not v2)
   if (manifestSession.version === 3) {
     saveManifestSessionToStorageV3(manifestSession);
@@ -3147,9 +3257,9 @@ function submitManifestMapping() {
   }
 
   renderManifestSessionIndicator();
-  // CHANGE 1: After manifest is ready, route to Receiving Home instead of Summary
-  renderManifestReceivingHome();
-  showScreen('scr-manifest-receiving-home');
+  // PHASE 5A: Route to Receiving Workspace instead of old receiving-home
+  renderReceivingWorkspace();
+  showScreen('scr-receiving-workspace');
 }
 
 // CHANGE 1: Render Manifest Receiving Home screen
@@ -3771,7 +3881,20 @@ function getManifestAllocationSummary(manifestSession) {
   };
 }
 
-function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail, overageData) {
+// PHASE 5A: Calculate stable product key for grouping
+function calculateProductKey(upc, sku, productId) {
+  const normalizedUpc = normalizeManifestIdentifier(upc);
+  if (normalizedUpc) {
+    return 'UPC:' + normalizedUpc;
+  }
+  const normalizedSku = normalizeManifestIdentifier(sku);
+  if (normalizedSku) {
+    return 'SKU:' + normalizedSku;
+  }
+  return 'MANUAL:' + (productId || '');
+}
+
+function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail, overageData, productId) {
   if (!manifestSession || !manifestSession.allocationRecords) return null;
 
   const record = {
@@ -3779,8 +3902,10 @@ function recordAllocation(manifestSession, upc, sku, quantity, destination, iden
     timestamp: new Date().toISOString(),
     upc: upc || '',
     sku: sku || '',
-    manifestRowIds: matchRows.map(r => r.rowId),
-    sourceRowNumbers: matchRows.map(r => r.sourceRowNumber),
+    productId: productId || '',
+    productKey: calculateProductKey(upc, sku, productId),
+    manifestRowIds: (matchRows || []).map(r => r.rowId),
+    sourceRowNumbers: (matchRows || []).map(r => r.sourceRowNumber),
     destination: destination,
     quantity: parseInt(quantity) || 1,
     identificationMethod: identificationMethod,
@@ -3792,7 +3917,9 @@ function recordAllocation(manifestSession, upc, sku, quantity, destination, iden
     isOverage: overageData?.isOverage || false,
     expectedQtyAtAllocation: overageData?.expectedQty || null,
     assignedBefore: overageData?.assignedBefore || 0,
-    assignedAfter: overageData?.assignedAfter || 0
+    assignedAfter: overageData?.assignedAfter || 0,
+    // PHASE 5A: Track data source
+    dataSource: overageData?.dataSource || 'MANUAL'
   };
 
   manifestSession.allocationRecords.push(record);
@@ -3894,12 +4021,13 @@ function getDestinationManifestRows(manifestSession, destination) {
   if (!manifestSession || !manifestSession.allocationRecords) return [];
   const records = manifestSession.allocationRecords.filter(r => r.destination === destination);
 
-  // Group by UPC for display
-  const byUpc = {};
+  // PHASE 5A: Group by productKey for stable identity
+  const byProductKey = {};
   records.forEach(record => {
-    const key = record.upc || 'UNKNOWN';
-    if (!byUpc[key]) {
-      byUpc[key] = {
+    // Use productKey if available, fall back to UPC-based grouping
+    const key = record.productKey || (record.upc || 'UNKNOWN');
+    if (!byProductKey[key]) {
+      byProductKey[key] = {
         upc: record.upc,
         sku: record.sku,
         title: record.title,
@@ -3917,18 +4045,19 @@ function getDestinationManifestRows(manifestSession, destination) {
         destination: destination,
         totalQuantity: 0,
         records: [],
+        productKey: key,
         identificationMethods: new Set()
       };
     }
-    byUpc[key].totalQuantity += record.quantity;
-    byUpc[key].records.push(record);
+    byProductKey[key].totalQuantity += record.quantity;
+    byProductKey[key].records.push(record);
     if (record.identificationMethod) {
-      byUpc[key].identificationMethods.add(record.identificationMethod);
+      byProductKey[key].identificationMethods.add(record.identificationMethod);
     }
   });
 
   // Convert Sets to arrays and aggregate identificationMethod
-  Object.values(byUpc).forEach(group => {
+  Object.values(byProductKey).forEach(group => {
     const methods = Array.from(group.identificationMethods);
     if (methods.length === 0) {
       group.identificationMethod = '';
@@ -3940,7 +4069,7 @@ function getDestinationManifestRows(manifestSession, destination) {
     delete group.identificationMethods;
   });
 
-  return Object.values(byUpc);
+  return Object.values(byProductKey);
 }
 
 function showDestinationManifest(destination) {
@@ -5511,6 +5640,449 @@ async function runPhase1Tests() {
   return passed === total;
 }
 
+// ========== PHASE 5A: UNIFIED RECEIVING WORKFLOW ==========
+
+function renderReceivingWorkspace() {
+  if (!manifestSession) return;
+
+  const container = $('receiving-workspace-content');
+  if (!container) return;
+
+  const manifestStatus = manifestSession.isManifestLoaded ?
+    `📋 Manifest: ${manifestSession.fileName || 'loaded'} (${manifestSession.rows.length} rows)` :
+    '📦 No Manifest';
+
+  const summary = getManifestAllocationSummary(manifestSession);
+
+  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+  html += '<div style="text-align:center">';
+  html += '<div style="font-size:48px;margin-bottom:12px">📦</div>';
+  html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Receiving Workspace</h2>';
+  html += '<p style="font-size:13px;color:var(--mu)">' + manifestStatus + '</p>';
+  html += '</div>';
+
+  // Destination summary
+  html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-top:16px">';
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:0">';
+
+  ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'].forEach(dest => {
+    const destSummary = summary.byDestination[dest] || { assigned: 0 };
+    html += '<div style="background:var(--sf);border-radius:8px;padding:12px;text-align:center">';
+    html += '<div style="font-size:14px;font-weight:800;color:var(--ac)">' + destSummary.assigned + '</div>';
+    html += '<div style="font-size:10px;color:var(--mu);margin-top:4px">' + dest + '</div>';
+    html += '</div>';
+  });
+
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
+
+  // Identification methods
+  html += '<div style="margin-top:20px">';
+  html += '<div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;font-weight:700">Identify Product</div>';
+
+  const methods = [
+    { id: 'barcode', label: 'Scan Barcode', icon: '📷' },
+    { id: 'photo', label: 'Identify by Photo', icon: '🖼️' },
+    { id: 'upc-sku', label: 'Enter UPC / SKU', icon: '⌨️' },
+    { id: 'manual-product', label: 'Enter Product Manually', icon: '✏️' }
+  ];
+
+  html += '<div style="display:grid;grid-template-columns:1fr;gap:8px">';
+  methods.forEach(m => {
+    html += '<button class="btn" style="margin-bottom:0;text-align:left;background:var(--sf);color:var(--tx);border:1px solid var(--bd)" ';
+    html += `onclick="startIdentificationMethod('${m.id}')" ontouchend="event.preventDefault();startIdentificationMethod('${m.id}')"`;
+    html += '>';
+    html += m.icon + ' ' + m.label;
+    html += '</button>';
+  });
+  html += '</div>';
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+function startIdentificationMethod(method) {
+  receivingState.identificationMethod = method;
+
+  if (method === 'barcode') {
+    showScreen('scr-scan');
+  } else if (method === 'photo') {
+    showScreen('scr-photo-capture');
+  } else if (method === 'upc-sku') {
+    renderUpcSkuEntry();
+    showScreen('scr-manual-product-entry');
+  } else if (method === 'manual-product') {
+    renderManualProductEntry();
+    showScreen('scr-manual-product-entry');
+  }
+}
+
+function renderUpcSkuEntry() {
+  const container = $('manual-product-form-content');
+  if (!container) return;
+
+  let html = '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">UPC or SKU</label>';
+  html += '<input id="upc-sku-entry-input" type="text" placeholder="Enter UPC or SKU..." ';
+  html += 'style="width:100%;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)" ';
+  html += 'onkeydown="if(event.key===\'Enter\') submitUpcSkuEntry()">';
+  html += '</div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+  html += '<button class="btn grn" onclick="submitUpcSkuEntry()" ontouchend="event.preventDefault();submitUpcSkuEntry()" style="margin-bottom:0">✓ Continue</button>';
+  html += '<button class="btn sec" onclick="showScreen(\'scr-receiving-workspace\')" ontouchend="event.preventDefault();showScreen(\'scr-receiving-workspace\')" style="margin-bottom:0">← Back</button>';
+  html += '</div>';
+}
+
+function submitUpcSkuEntry() {
+  const input = $('upc-sku-entry-input');
+  const identifier = input?.value?.trim();
+  if (!identifier) {
+    toast('⚠️ Enter UPC or SKU');
+    return;
+  }
+
+  // Determine if numeric (UPC) or alphanumeric (SKU)
+  const isNumeric = /^\d+$/.test(identifier);
+
+  if (isNumeric) {
+    // Treat as UPC - look up using normal UPC search
+    receivingState.currentProduct = {
+      upc: identifier,
+      sku: '',
+      description: '',
+      qty: 1,
+      retail: null,
+      ropa: '',
+      notes: '',
+      identificationMethod: 'manual_upc',
+      source: 'UPC_SKU'
+    };
+  } else {
+    // Treat as SKU - look for exact manifest match if available
+    let found = false;
+    if (manifestSession?.isManifestLoaded && manifestSession.rows) {
+      const match = manifestSession.rows.find(r =>
+        r.normalized && normalizeManifestIdentifier(r.normalized.sku) === normalizeManifestIdentifier(identifier)
+      );
+      if (match) {
+        receivingState.currentProduct = {
+          upc: match.normalized.upc || '',
+          sku: match.normalized.sku || identifier,
+          description: match.normalized.title || '',
+          qty: 1,
+          retail: match.normalized.unitRetail || null,
+          ropa: '',
+          notes: '',
+          identificationMethod: 'manual_sku',
+          source: 'MANIFEST',
+          manifestRowId: match.rowId
+        };
+        found = true;
+      }
+    }
+
+    if (!found) {
+      // No manifest match - create product from SKU
+      receivingState.currentProduct = {
+        upc: '',
+        sku: identifier,
+        description: '',
+        qty: 1,
+        retail: null,
+        ropa: '',
+        notes: '',
+        identificationMethod: 'manual_sku',
+        source: 'MANUAL'
+      };
+    }
+  }
+
+  // Show product review
+  renderProductReview();
+  showScreen('scr-product-review');
+}
+
+function renderManualProductEntry() {
+  const container = $('manual-product-form-content');
+  if (!container) return;
+
+  let html = '';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">SKU (optional)</label>';
+  html += '<input id="manual-sku-input" type="text" placeholder="Leave blank if not available..." ';
+  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">UPC (optional)</label>';
+  html += '<input id="manual-upc-input" type="text" placeholder="Leave blank if not available..." ';
+  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Description *</label>';
+  html += '<input id="manual-desc-input" type="text" placeholder="Required" ';
+  html += 'style="width:100%;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Quantity</label>';
+  html += '<input id="manual-qty-input" type="number" value="1" min="1" ';
+  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Retail Price (optional)</label>';
+  html += '<input id="manual-retail-input" type="number" step="0.01" placeholder="0.00" ';
+  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:16px">';
+  html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">ROPA (optional)</label>';
+  html += '<input id="manual-ropa-input" type="text" placeholder="e.g., ROPA-001" ';
+  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += '</div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px">';
+  html += '<button class="btn grn" onclick="submitManualProductEntry()" ontouchend="event.preventDefault();submitManualProductEntry()" style="margin-bottom:0">✓ Review</button>';
+  html += '<button class="btn sec" onclick="showScreen(\'scr-receiving-workspace\')" ontouchend="event.preventDefault();showScreen(\'scr-receiving-workspace\')" style="margin-bottom:0">← Back</button>';
+  html += '</div>';
+}
+
+function submitManualProductEntry() {
+  if (receivingState.identificationMethod === 'upc-sku') {
+    submitUpcSkuEntry();
+    return;
+  }
+
+  const sku = $('manual-sku-input')?.value?.trim() || '';
+  const upc = $('manual-upc-input')?.value?.trim() || '';
+  const desc = $('manual-desc-input')?.value?.trim() || '';
+  const qty = parseInt($('manual-qty-input')?.value) || 1;
+  const retail = parseFloat($('manual-retail-input')?.value) || null;
+  const ropa = $('manual-ropa-input')?.value?.trim() || '';
+
+  if (!desc) {
+    toast('⚠️ Description is required');
+    return;
+  }
+
+  if (!upc && !sku) {
+    // Allow product without UPC/SKU but assign unique ID
+  }
+
+  receivingState.currentProduct = {
+    upc: upc,
+    sku: sku,
+    description: desc,
+    qty: qty,
+    retail: retail,
+    ropa: ropa,
+    notes: '',
+    identificationMethod: 'manual_product',
+    source: 'MANUAL',
+    productId: 'manual_' + Date.now()
+  };
+
+  renderProductReview();
+  showScreen('scr-product-review');
+}
+
+function renderProductReview() {
+  const container = $('product-review-content');
+  if (!container || !receivingState.currentProduct) return;
+
+  const product = receivingState.currentProduct;
+
+  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+  html += '<h2 style="font-size:18px;font-weight:800;margin-bottom:16px">Product Review</h2>';
+
+  // Product data display
+  html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px">';
+
+  if (product.sku) {
+    html += '<div style="margin-bottom:8px"><span style="color:var(--mu);font-size:12px">SKU</span><br><span style="font-size:14px;font-weight:700">' + escapeHtml(product.sku) + '</span></div>';
+  }
+
+  if (product.upc) {
+    html += '<div style="margin-bottom:8px"><span style="color:var(--mu);font-size:12px">UPC</span><br><span style="font-size:14px;font-weight:700">' + escapeHtml(product.upc) + '</span></div>';
+  }
+
+  html += '<div style="margin-bottom:8px"><span style="color:var(--mu);font-size:12px">DESCRIPTION</span><br><span style="font-size:14px;font-weight:700">' + escapeHtml(product.description) + '</span></div>';
+
+  if (product.qty) {
+    html += '<div style="margin-bottom:8px"><span style="color:var(--mu);font-size:12px">QUANTITY</span><br><span style="font-size:14px;font-weight:700">' + product.qty + '</span></div>';
+  }
+
+  if (product.retail) {
+    html += '<div><span style="color:var(--mu);font-size:12px">RETAIL</span><br><span style="font-size:14px;font-weight:700">$' + product.retail.toFixed(2) + '</span></div>';
+  }
+
+  html += '</div>';
+
+  // Manifest enrichment panel (if manifest loaded)
+  if (manifestSession?.isManifestLoaded) {
+    let manifestMatch = null;
+    if (product.upc) {
+      const normalized = normalizeManifestIdentifier(product.upc);
+      manifestMatch = manifestSession.rows.find(r => r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalized);
+    } else if (product.sku) {
+      const normalized = normalizeManifestIdentifier(product.sku);
+      manifestMatch = manifestSession.rows.find(r => r.normalized && normalizeManifestIdentifier(r.normalized.sku) === normalized);
+    }
+
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px;border-left:3px solid var(--gd)">';
+    if (manifestMatch) {
+      html += '<div style="font-size:12px;color:var(--gd);font-weight:700;margin-bottom:8px">✓ Found in Manifest</div>';
+      html += '<div style="font-size:12px;color:var(--mu)">Row ' + (manifestMatch.sourceRowNumber || '?') + ': ';
+      html += escapeHtml(manifestMatch.normalized.title || '') + '</div>';
+    } else {
+      html += '<div style="font-size:12px;color:var(--mu)">ℹ️ Not found in manifest</div>';
+    }
+    html += '</div>';
+  }
+
+  // Editable fields
+  html += '<div style="margin-bottom:20px">';
+  html += '<div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;font-weight:700">Correct Information</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">SKU</label><br>';
+  html += '<input id="review-sku-edit" type="text" value="' + escapeHtml(product.sku || '') + '" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">UPC</label><br>';
+  html += '<input id="review-upc-edit" type="text" value="' + escapeHtml(product.upc || '') + '" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">DESCRIPTION</label><br>';
+  html += '<input id="review-desc-edit" type="text" value="' + escapeHtml(product.description || '') + '" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">QUANTITY</label><br>';
+  html += '<input id="review-qty-edit" type="number" value="' + (product.qty || 1) + '" min="1" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">RETAIL</label><br>';
+  html += '<input id="review-retail-edit" type="number" step="0.01" value="' + (product.retail || '') + '" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '<div style="margin-bottom:12px">';
+  html += '<label style="font-size:12px;color:var(--mu)">ROPA</label><br>';
+  html += '<input id="review-ropa-edit" type="text" value="' + escapeHtml(product.ropa || '') + '" ';
+  html += 'style="width:100%;padding:10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:var(--sf2);color:var(--tx);margin-top:4px">';
+  html += '</div>';
+
+  html += '</div>';
+
+  // Destination selection
+  html += '<div style="margin-bottom:20px">';
+  html += '<label style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px;font-weight:700">Destination</label>';
+  html += '<select id="review-destination-select" style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:14px;background:var(--sf2);color:var(--tx)">';
+  html += '<option value="UNASSIGNED">-- Select Destination --</option>';
+  ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'].forEach(dest => {
+    html += '<option value="' + dest + '">' + dest + '</option>';
+  });
+  html += '</select>';
+  html += '</div>';
+
+  // Action buttons
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+  html += '<button class="btn grn" onclick="confirmProductReview()" ontouchend="event.preventDefault();confirmProductReview()" style="margin-bottom:0">✓ Confirm Allocation</button>';
+  html += '<button class="btn sec" onclick="backToReceivingWorkspace()" ontouchend="event.preventDefault();backToReceivingWorkspace()" style="margin-bottom:0">← Back</button>';
+  html += '</div>';
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function confirmProductReview() {
+  if (!receivingState.currentProduct) return;
+
+  const product = receivingState.currentProduct;
+  const destination = $('review-destination-select')?.value || 'UNASSIGNED';
+
+  if (destination === 'UNASSIGNED' && !confirm('⚠️ Destination is UNASSIGNED. Confirm?')) {
+    return;
+  }
+
+  // Get corrected values from review screen
+  const sku = $('review-sku-edit')?.value?.trim() || '';
+  const upc = $('review-upc-edit')?.value?.trim() || '';
+  const desc = $('review-desc-edit')?.value?.trim() || '';
+  const qty = parseInt($('review-qty-edit')?.value) || 1;
+  const retail = parseFloat($('review-retail-edit')?.value) || null;
+  const ropa = $('review-ropa-edit')?.value?.trim() || '';
+
+  if (qty < 1) {
+    toast('⚠️ Quantity must be at least 1');
+    return;
+  }
+
+  // For no-manifest sessions, don't calculate overage
+  let overageData = { dataSource: product.source || 'MANUAL' };
+  if (manifestSession?.isManifestLoaded && manifestSession.rows.length > 0) {
+    // Check for manifest overage only if manifest exists
+    const normalizedUpc = normalizeManifestIdentifier(upc);
+    const expectedQty = manifestSession.rows
+      .filter(r => r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc)
+      .reduce((sum, r) => {
+        const q = r.normalized.expectedQty;
+        return sum + (typeof q === 'number' && q !== null ? q : 0);
+      }, 0);
+
+    if (expectedQty > 0) {
+      const alreadyAssigned = manifestSession.allocationRecords
+        .filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpc)
+        .reduce((sum, r) => sum + r.quantity, 0);
+      overageData.expectedQty = expectedQty;
+      overageData.isOverage = (alreadyAssigned + qty) > expectedQty;
+    }
+  }
+
+  // Create allocation record
+  const record = recordAllocation(
+    manifestSession,
+    upc,
+    sku,
+    qty,
+    destination,
+    product.identificationMethod,
+    [],  // No manifest row IDs for manual products
+    desc,
+    '',
+    retail,
+    overageData,
+    product.productId || 'manual_' + Date.now()
+  );
+
+  if (record) {
+    toast('✅ Allocated ' + qty + ' units');
+    receivingState.currentProduct = null;
+    renderReceivingWorkspace();
+    showScreen('scr-receiving-workspace');
+  } else {
+    toast('❌ Failed to create allocation');
+  }
+}
+
+function backToReceivingWorkspace() {
+  receivingState.currentProduct = null;
+  renderReceivingWorkspace();
+  showScreen('scr-receiving-workspace');
+}
+
 // ========== PHASE 4: CONFIGURABLE OUTPUT MODEL TESTS ==========
 function runPhase4Tests() {
   const results = {};
@@ -6267,9 +6839,309 @@ function runPhase4Tests() {
   return passed === total;
 }
 
+// ========== PHASE 5A: UNIFIED RECEIVING WORKFLOW TESTS ==========
+function runPhase5ATests() {
+  const results = {};
+  let passed = 0;
+  const tests = [];
+
+  // Test 1: No-manifest session starts
+  try {
+    const testSession = {
+      version: 3,
+      id: 'test-' + Date.now(),
+      fileName: '',
+      fileType: '',
+      rows: [],
+      allocationRecords: [],
+      status: 'ready',
+      receivingActive: true,
+      isManifestLoaded: false
+    };
+    results['No-manifest session creation'] =
+      testSession.receivingActive === true &&
+      testSession.isManifestLoaded === false &&
+      testSession.rows.length === 0;
+    console.log(`${results['No-manifest session creation'] ? '✓' : '✗'} No-manifest session creation\n`);
+    if (results['No-manifest session creation']) passed++;
+    tests.push('No-manifest session creation');
+  } catch (e) {
+    results['No-manifest session creation'] = false;
+    console.log(`✗ No-manifest session creation error: ${e.message}\n`);
+    tests.push('No-manifest session creation');
+  }
+
+  // Test 2: Stable productKey generation (UPC)
+  try {
+    const key1 = calculateProductKey('012345678901', '', '');
+    const key2 = calculateProductKey('012345678901', '', '');
+    results['Stable productKey (UPC)'] = key1 === key2 && key1.startsWith('UPC:');
+    console.log(`${results['Stable productKey (UPC)'] ? '✓' : '✗'} Stable productKey (UPC): ${key1}\n`);
+    if (results['Stable productKey (UPC)']) passed++;
+    tests.push('Stable productKey (UPC)');
+  } catch (e) {
+    results['Stable productKey (UPC)'] = false;
+    console.log(`✗ Stable productKey (UPC) error: ${e.message}\n`);
+    tests.push('Stable productKey (UPC)');
+  }
+
+  // Test 3: Stable productKey generation (SKU)
+  try {
+    const key1 = calculateProductKey('', 'SKU-123-ABC', '');
+    const key2 = calculateProductKey('', 'SKU-123-ABC', '');
+    results['Stable productKey (SKU)'] = key1 === key2 && key1.startsWith('SKU:') && key1.includes('ABC');
+    console.log(`${results['Stable productKey (SKU)'] ? '✓' : '✗'} Stable productKey (SKU): ${key1}\n`);
+    if (results['Stable productKey (SKU)']) passed++;
+    tests.push('Stable productKey (SKU)');
+  } catch (e) {
+    results['Stable productKey (SKU)'] = false;
+    console.log(`✗ Stable productKey (SKU) error: ${e.message}\n`);
+    tests.push('Stable productKey (SKU)');
+  }
+
+  // Test 4: Blank-UPC products remain separate
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: []
+    };
+    const prod1Id = 'manual_1';
+    const prod2Id = 'manual_2';
+
+    recordAllocation(testSession, '', '', 5, 'SAVVY', 'manual_product', [], 'Product 1', '', null,
+      { dataSource: 'MANUAL' }, prod1Id);
+    recordAllocation(testSession, '', '', 3, 'SAVVY', 'manual_product', [], 'Product 2', '', null,
+      { dataSource: 'MANUAL' }, prod2Id);
+
+    const row1 = testSession.allocationRecords[0];
+    const row2 = testSession.allocationRecords[1];
+    results['Blank-UPC separation'] =
+      row1.productId !== row2.productId &&
+      row1.productKey !== row2.productKey &&
+      row1.productKey.startsWith('MANUAL:') &&
+      row2.productKey.startsWith('MANUAL:');
+    console.log(`${results['Blank-UPC separation'] ? '✓' : '✗'} Blank-UPC separation: ${row1.productKey} vs ${row2.productKey}\n`);
+    if (results['Blank-UPC separation']) passed++;
+    tests.push('Blank-UPC separation');
+  } catch (e) {
+    results['Blank-UPC separation'] = false;
+    console.log(`✗ Blank-UPC separation error: ${e.message}\n`);
+    tests.push('Blank-UPC separation');
+  }
+
+  // Test 5: dataSource vs identificationMethod separation
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '123456789012', 'SKU1', 1, 'SAVVY', 'barcode', [], 'Title', '', 10,
+      { dataSource: 'MANUAL' });
+    const record = testSession.allocationRecords[0];
+    results['dataSource/identificationMethod sep'] =
+      record.dataSource === 'MANUAL' &&
+      record.identificationMethod === 'barcode';
+    console.log(`${results['dataSource/identificationMethod sep'] ? '✓' : '✗'} dataSource/identificationMethod separation\n`);
+    if (results['dataSource/identificationMethod sep']) passed++;
+    tests.push('dataSource/identificationMethod separation');
+  } catch (e) {
+    results['dataSource/identificationMethod sep'] = false;
+    console.log(`✗ dataSource/identificationMethod separation error: ${e.message}\n`);
+    tests.push('dataSource/identificationMethod separation');
+  }
+
+  // Test 6: No-manifest allocation is NOT overage
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [],
+      isManifestLoaded: false
+    };
+    recordAllocation(testSession, '999999999999', 'NOMANIFEST', 100, 'SAVVY', 'manual_upc', [],
+      'Test Product', '', 15, { dataSource: 'MANUAL', expectedQty: null, isOverage: false });
+
+    const record = testSession.allocationRecords[0];
+    results['No-manifest allocation not overage'] = record.isOverage === false && record.expectedQtyAtAllocation === null;
+    console.log(`${results['No-manifest allocation not overage'] ? '✓' : '✗'} No-manifest allocation is NOT overage\n`);
+    if (results['No-manifest allocation not overage']) passed++;
+    tests.push('No-manifest allocation is NOT overage');
+  } catch (e) {
+    results['No-manifest allocation not overage'] = false;
+    console.log(`✗ No-manifest allocation not overage error: ${e.message}\n`);
+    tests.push('No-manifest allocation is NOT overage');
+  }
+
+  // Test 7: Manifest miss non-blocking
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ normalized: { expectedQty: 50, upc: '111111111111', sku: 'MANIFEST1' }, rowId: 0, sourceRowNumber: 2 }],
+      isManifestLoaded: true
+    };
+    // Try to allocate different UPC (no match)
+    recordAllocation(testSession, '222222222222', 'NOMATCH', 5, 'SAVVY', 'manual_upc', [],
+      'Unmatched Product', '', 10, { dataSource: 'MANUAL' });
+
+    const record = testSession.allocationRecords[0];
+    results['Manifest-miss non-blocking'] =
+      record.isOverage === false &&
+      record.manifestRowIds.length === 0;
+    console.log(`${results['Manifest-miss non-blocking'] ? '✓' : '✗'} Manifest-miss non-blocking\n`);
+    if (results['Manifest-miss non-blocking']) passed++;
+    tests.push('Manifest-miss non-blocking');
+  } catch (e) {
+    results['Manifest-miss non-blocking'] = false;
+    console.log(`✗ Manifest-miss non-blocking error: ${e.message}\n`);
+    tests.push('Manifest-miss non-blocking');
+  }
+
+  // Test 8: Destination routing (all 4 destinations work)
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const dests = ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'];
+    dests.forEach((d, i) => {
+      recordAllocation(testSession, 'TEST-' + i, 'SKU-' + i, 1, d, 'manual_product', [],
+        'Product ' + i, '', 10, { dataSource: 'MANUAL' });
+    });
+
+    results['Destination routing'] = testSession.allocationRecords.every((r, i) => r.destination === dests[i]);
+    console.log(`${results['Destination routing'] ? '✓' : '✗'} Destination routing: ${dests.join(', ')}\n`);
+    if (results['Destination routing']) passed++;
+    tests.push('Destination routing');
+  } catch (e) {
+    results['Destination routing'] = false;
+    console.log(`✗ Destination routing error: ${e.message}\n`);
+    tests.push('Destination routing');
+  }
+
+  // Test 9: SKU letters preserved
+  try {
+    const key = calculateProductKey('', 'SKU-ABC-123-XYZ', '');
+    results['SKU letters preserved'] = key.includes('ABC') && key.includes('XYZ');
+    console.log(`${results['SKU letters preserved'] ? '✓' : '✗'} SKU letters preserved: ${key}\n`);
+    if (results['SKU letters preserved']) passed++;
+    tests.push('SKU letters preserved');
+  } catch (e) {
+    results['SKU letters preserved'] = false;
+    console.log(`✗ SKU letters preserved error: ${e.message}\n`);
+    tests.push('SKU letters preserved');
+  }
+
+  // Test 10: Leading-zero UPC preserved
+  try {
+    const key = calculateProductKey('012345678901', '', '');
+    results['Leading-zero UPC preserved'] = key.includes('012345678901');
+    console.log(`${results['Leading-zero UPC preserved'] ? '✓' : '✗'} Leading-zero UPC preserved: ${key}\n`);
+    if (results['Leading-zero UPC preserved']) passed++;
+    tests.push('Leading-zero UPC preserved');
+  } catch (e) {
+    results['Leading-zero UPC preserved'] = false;
+    console.log(`✗ Leading-zero UPC preserved error: ${e.message}\n`);
+    tests.push('Leading-zero UPC preserved');
+  }
+
+  // Test 11: identificationMethod values correct
+  try {
+    const methods = ['barcode', 'photo', 'manual_upc', 'manual_sku', 'manual_product'];
+    const testSession = { allocationRecords: [], rows: [] };
+    methods.forEach((m, i) => {
+      recordAllocation(testSession, 'U-' + i, 'S-' + i, 1, 'SAVVY', m, [], 'P', '', null,
+        { dataSource: 'MANUAL' });
+    });
+
+    results['identificationMethod values'] = testSession.allocationRecords.every((r, i) =>
+      r.identificationMethod === methods[i]
+    );
+    console.log(`${results['identificationMethod values'] ? '✓' : '✗'} identificationMethod values\n`);
+    if (results['identificationMethod values']) passed++;
+    tests.push('identificationMethod values');
+  } catch (e) {
+    results['identificationMethod values'] = false;
+    console.log(`✗ identificationMethod values error: ${e.message}\n`);
+    tests.push('identificationMethod values');
+  }
+
+  // Test 12: ProductKey grouping by destination
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '123456789012', 'SKU1', 5, 'SAVVY', 'barcode', [], 'P1', '', 10,
+      { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '123456789012', 'SKU1', 3, 'DWI', 'barcode', [], 'P1', '', 10,
+      { dataSource: 'MANUAL' });
+
+    const savvy = getDestinationManifestRows(testSession, 'SAVVY');
+    const dwi = getDestinationManifestRows(testSession, 'DWI');
+
+    results['ProductKey grouping by destination'] =
+      savvy.length === 1 && dwi.length === 1 &&
+      savvy[0].totalQuantity === 5 && dwi[0].totalQuantity === 3;
+    console.log(`${results['ProductKey grouping by destination'] ? '✓' : '✗'} ProductKey grouping by destination\n`);
+    if (results['ProductKey grouping by destination']) passed++;
+    tests.push('ProductKey grouping by destination');
+  } catch (e) {
+    results['ProductKey grouping by destination'] = false;
+    console.log(`✗ ProductKey grouping by destination error: ${e.message}\n`);
+    tests.push('ProductKey grouping by destination');
+  }
+
+  // Test 13: Phase 3 allocation edit still works
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const rec = recordAllocation(testSession, 'TEST', '', 5, 'SAVVY', 'barcode', [], '', '', null,
+      { dataSource: 'MANUAL' });
+    updateAllocationQuantity(testSession, rec.id, 10);
+    results['Phase 3 allocation edit'] = testSession.allocationRecords[0].quantity === 10;
+    console.log(`${results['Phase 3 allocation edit'] ? '✓' : '✗'} Phase 3 allocation edit works\n`);
+    if (results['Phase 3 allocation edit']) passed++;
+    tests.push('Phase 3 allocation edit');
+  } catch (e) {
+    results['Phase 3 allocation edit'] = false;
+    console.log(`✗ Phase 3 allocation edit error: ${e.message}\n`);
+    tests.push('Phase 3 allocation edit');
+  }
+
+  // Test 14: Phase 3 allocation change destination still works
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const rec = recordAllocation(testSession, 'TEST2', '', 3, 'SAVVY', 'barcode', [], '', '', null,
+      { dataSource: 'MANUAL' });
+    updateAllocationDestination(testSession, rec.id, 'DWI');
+    results['Phase 3 change destination'] = testSession.allocationRecords[0].destination === 'DWI';
+    console.log(`${results['Phase 3 change destination'] ? '✓' : '✗'} Phase 3 change destination works\n`);
+    if (results['Phase 3 change destination']) passed++;
+    tests.push('Phase 3 change destination');
+  } catch (e) {
+    results['Phase 3 change destination'] = false;
+    console.log(`✗ Phase 3 change destination error: ${e.message}\n`);
+    tests.push('Phase 3 change destination');
+  }
+
+  // Test 15: Phase 3 allocation remove still works
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    const rec = recordAllocation(testSession, 'TEST3', '', 7, 'SAVVY', 'barcode', [], '', '', null,
+      { dataSource: 'MANUAL' });
+    removeAllocation(testSession, rec.id);
+    results['Phase 3 remove allocation'] = testSession.allocationRecords.length === 0;
+    console.log(`${results['Phase 3 remove allocation'] ? '✓' : '✗'} Phase 3 remove allocation works\n`);
+    if (results['Phase 3 remove allocation']) passed++;
+    tests.push('Phase 3 remove allocation');
+  } catch (e) {
+    results['Phase 3 remove allocation'] = false;
+    console.log(`✗ Phase 3 remove allocation error: ${e.message}\n`);
+    tests.push('Phase 3 remove allocation');
+  }
+
+  console.log('\n========== PHASE 5A TEST RESULTS ==========\n');
+  tests.forEach(test => {
+    console.log(`  ${results[test] ? '✓' : '✗'} ${test}`);
+  });
+  console.log(`\nPassed: ${passed}/${tests.length}\n`);
+
+  return passed === tests.length;
+}
+
 // Add test runners to window for manual testing
 window.runPhase1Tests = runPhase1Tests;
 window.runPhase4Tests = runPhase4Tests;
+window.runPhase5ATests = runPhase5ATests;
 
 </script>
 
@@ -6551,6 +7423,45 @@ window.runPhase4Tests = runPhase4Tests;
 <div class="scr" id="scr-output-preview">
   <button class="btn sec" style="margin-bottom:12px" onclick="backFromOutputPreview()" ontouchend="event.preventDefault();backFromOutputPreview()">← Back</button>
   <div id="output-preview-content"></div>
+</div>
+
+<!-- PHASE 5A: START RECEIVING SCREEN -->
+<div class="scr" id="scr-start-receiving">
+  <div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px;text-align:center">
+    <div style="font-size:48px;margin-bottom:12px">📦</div>
+    <h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Receiving</h2>
+    <p style="font-size:13px;color:var(--mu)">Create new receiving session</p>
+  </div>
+
+  <button class="btn" style="margin-bottom:12px;background:var(--ac)" onclick="startReceivingWithManifest()" ontouchend="event.preventDefault();startReceivingWithManifest()">📁 Upload Manifest</button>
+  <p style="font-size:11px;color:var(--mu);text-align:center;margin-bottom:16px">Or skip manifest and enter products manually</p>
+  <button class="btn" style="margin-bottom:12px;background:var(--gd);color:#000" onclick="startReceivingWithoutManifest()" ontouchend="event.preventDefault();startReceivingWithoutManifest()">▶️ Continue Without Manifest</button>
+
+  <button class="btn sec" style="margin-top:20px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+</div>
+
+<!-- PHASE 5A: RECEIVING WORKSPACE SCREEN -->
+<div class="scr" id="scr-receiving-workspace">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-start-receiving')" ontouchend="event.preventDefault();showScreen('scr-start-receiving')">← New Receiving</button>
+  <div id="receiving-workspace-content"></div>
+</div>
+
+<!-- PHASE 5A: PRODUCT REVIEW SCREEN -->
+<div class="scr" id="scr-product-review">
+  <button class="btn sec" style="margin-bottom:12px" onclick="backToReceivingWorkspace()" ontouchend="event.preventDefault();backToReceivingWorkspace()">← Back</button>
+  <div id="product-review-content"></div>
+</div>
+
+<!-- PHASE 5A: MANUAL PRODUCT ENTRY SCREEN -->
+<div class="scr" id="scr-manual-product-entry">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-receiving-workspace')" ontouchend="event.preventDefault();showScreen('scr-receiving-workspace')">← Back</button>
+  <div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:48px;margin-bottom:12px">⌨️</div>
+      <h2 style="font-size:20px;font-weight:800">Enter Product</h2>
+    </div>
+    <div id="manual-product-form-content"></div>
+  </div>
 </div>
 
 </body>
