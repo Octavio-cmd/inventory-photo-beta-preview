@@ -1923,6 +1923,7 @@ async function selectPhotoCandidate(itemId, rank){
           retail: candidateData.price || null,
           ropa: '',
           notes: '',
+          productId: generateProductId(),  // DEFECT 18-19: Stable ID
           identificationMethod: 'photo',
           manifest: null,
           ebay: {
@@ -1964,6 +1965,7 @@ async function selectPhotoCandidate(itemId, rank){
           retail: price,
           ropa: '',
           notes: '',
+          productId: generateProductId(),  // DEFECT 18-19: Stable ID
           identificationMethod: 'photo',
           manifest: null,
           ebay: {
@@ -1992,6 +1994,7 @@ async function selectPhotoCandidate(itemId, rank){
         retail: price,
         ropa: '',
         notes: '',
+        productId: generateProductId(),  // DEFECT 18-19: Stable ID
         identificationMethod: 'photo',
         manifest: null,
         ebay: {
@@ -3973,6 +3976,19 @@ function calculateProductKey(upc, sku, productId) {
   return 'MANUAL:' + (productId || '');
 }
 
+// DEFECT 18-19: Generate stable productId for allocation grouping
+function generateProductId() {
+  return 'prod_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+// Helper to calculate stable product key from identifiers
+function calculateProductKey(upc, sku, productId) {
+  if (upc) return 'UPC:' + normalizeManifestIdentifier(upc);
+  if (sku) return 'SKU:' + normalizeManifestIdentifier(sku);
+  if (productId) return 'MANUAL:' + productId;
+  return 'UNKNOWN';
+}
+
 // PHASE 5A DEFECT FIXES: Unified async enrichment helper
 async function identifyReceivingByUpc(upc, identificationMethod) {
   if (!upc) {
@@ -4001,14 +4017,16 @@ async function identifyReceivingByUpc(upc, identificationMethod) {
     const onlineResult = await identifyUpcOnline(upc);
 
     // Build receiving product with all enrichment
+    const productId = generateProductId();  // DEFECT 18-19: Generate stable ID at creation time
     receivingState.currentProduct = {
       upc: upc,
       sku: manifestMatch?.normalized?.sku || onlineResult?.identity?.sku || '',
       description: manifestMatch?.normalized?.title || onlineResult?.identity?.title || '',
       qty: 1,
-      retail: manifestMatch?.normalized?.unitRetail || onlineResult?.market?.averagePrice || null,
+      retail: manifestMatch?.normalized?.unitRetail || onlineResult?.market?.ebay?.average || null,
       ropa: '',
       notes: '',
+      productId: productId,  // DEFECT 18-19: Stable product ID
       identificationMethod: identificationMethod || 'barcode',
 
       // Manifest enrichment
@@ -4059,6 +4077,7 @@ async function identifyReceivingByUpc(upc, identificationMethod) {
     toast('⚠️ Lookup failed, showing basic entry');
 
     // Fallback to basic product
+    const productId = generateProductId();  // DEFECT 18-19: Stable ID even in error case
     receivingState.currentProduct = {
       upc: upc,
       sku: '',
@@ -4067,6 +4086,7 @@ async function identifyReceivingByUpc(upc, identificationMethod) {
       retail: null,
       ropa: '',
       notes: '',
+      productId: productId,  // DEFECT 18-19: Stable product ID
       identificationMethod: identificationMethod || 'manual_upc',
       manifest: null,
       ebay: null,
@@ -5960,6 +5980,7 @@ function submitUpcSkuEntry() {
         retail: firstRow.normalized.unitRetail || null,
         ropa: '',
         notes: '',
+        productId: generateProductId(),  // DEFECT 18-19: Stable ID
         identificationMethod: 'manual_sku',
         manifest: {
           matched: true,
@@ -5985,6 +6006,7 @@ function submitUpcSkuEntry() {
         retail: null,
         ropa: '',
         notes: '',
+        productId: generateProductId(),  // DEFECT 18-19: Stable ID
         identificationMethod: 'manual_sku',
         manifest: null,
         ebay: null,
@@ -6077,9 +6099,12 @@ function submitManualProductEntry() {
     retail: retail,
     ropa: ropa,
     notes: '',
+    productId: generateProductId(),  // DEFECT 18-19: Stable ID
     identificationMethod: 'manual_product',
-    source: 'MANUAL',
-    productId: 'manual_' + Date.now()
+    manifest: null,  // No manifest for pure manual
+    ebay: null,      // No eBay for pure manual
+    ebayMarket: null,
+    dataSource: 'MANUAL'
   };
 
   renderProductReview();
