@@ -6230,11 +6230,12 @@ async function runPhase1Tests() {
 
   // Test 56: eBay fields persisted into allocation record
   try {
-    const payload = buildReceivingSourcePayload(
-      { ebay: { title: 'TEST TITLE', brand: 'TEST BRAND', itemId: '123ABC', image: 'img.jpg' }, ebayMarket: { low: 10, average: 15, high: 20, matches: 7 } },
-      'ROPA1'
-    );
-    results['eBay payload persistence'] = payload.ebayTitle === 'TEST TITLE' && payload.brand === 'TEST BRAND' && payload.ebayItemId === '123ABC' && payload.ebayLow === 10;
+    const row = { rowId: 12, sourceRowNumber: 18, normalized: { upc: '001234567890', expectedQty: 5 } };
+    const testSession = { allocationRecords: [], rows: [row] };
+    const testProduct = { ebay: { title: 'TEST TITLE', brand: 'TEST BRAND', itemId: '123ABC', image: 'img.jpg' }, ebayMarket: { low: 10, average: 15, high: 20, matches: 7 } };
+    recordAllocation(testSession, 'TEST', '', 5, 'SAVVY', 'barcode', [row], '', '', null, testProduct);
+    const allocRec = testSession.allocationRecords[0];
+    results['eBay payload persistence'] = allocRec && allocRec.ebayTitle === 'TEST TITLE' && allocRec.brand === 'TEST BRAND' && allocRec.ebayItemId === '123ABC' && allocRec.ebayLow === 10;
     console.log(`${results['eBay payload persistence'] ? '✓' : '✗'} eBay payload persistence: ${results['eBay payload persistence'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     results['eBay payload persistence'] = false;
@@ -6376,9 +6377,6 @@ async function runPhase1Tests() {
   } catch (e) {
     results['Legacy migration idempotent'] = false;
     console.log(`✗ Legacy migration idempotent error: ${e.message}\n`);
-  }
-
-    console.log(`✗ ProductKey priority error: ${e.message}\n`);
   }
 
   // Summary
