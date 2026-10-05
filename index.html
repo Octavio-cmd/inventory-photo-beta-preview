@@ -2041,6 +2041,7 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     manifestDescription: '',
     manifestQty: null,
     manifestRetail: null,
+    manifestRetailValues: [],
     manifestExtendedRetail: null,
     manifestSku: '',
     manifestCategory: '',
@@ -2069,7 +2070,6 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
   row.destination = allocationGroup.destination || '';
   row.qty = allocationGroup.totalQuantity || 0;
   row.upc = String(allocationGroup.upc || '');
-  row.sku = allocationGroup.sku || '';
   row.ropa = allocationGroup.ropa || '';
   row.notes = allocationGroup.notes || '';
 
@@ -2126,9 +2126,8 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
       hasManifestData = true;
       const firstManifestRow = manifestRows[0];
 
-      if (firstManifestRow.normalized.sku && !row.sku) {
+      if (firstManifestRow.normalized.sku) {
         row.manifestSku = firstManifestRow.normalized.sku;
-        row.sku = firstManifestRow.normalized.sku;
       }
       if (firstManifestRow.normalized.title) {
         row.manifestDescription = firstManifestRow.normalized.title;
@@ -2144,11 +2143,13 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
         .map(r => r.normalized.unitRetail)
         .filter(v => v !== null && typeof v === 'number');
       if (retailValues.length > 0) {
-        const allEqual = retailValues.every(v => v === retailValues[0]);
-        if (allEqual) {
-          row.manifestRetail = retailValues[0];
+        const uniqueRetails = [...new Set(retailValues)];
+        if (uniqueRetails.length === 1) {
+          row.manifestRetail = uniqueRetails[0];
+          row.manifestRetailValues = uniqueRetails;
         } else {
-          row.manifestRetail = retailValues[0];
+          row.manifestRetail = null;
+          row.manifestRetailValues = uniqueRetails;
         }
       }
       if (firstManifestRow.normalized.category) {
@@ -2173,10 +2174,8 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     row.description = allocationGroup.title;
   }
 
-  // SKU priority: 1. manifest SKU (already set above), 2. allocation SKU (fallback if not in manifest), 3. blank
-  if (!row.sku && allocationGroup.sku) {
-    row.sku = allocationGroup.sku;
-  }
+  // SKU priority: 1. manifest SKU, 2. allocation SKU, 3. blank
+  row.sku = row.manifestSku || allocationGroup.sku || '';
 
   // Retail priority: 1. manifest retail, 2. eBay reference price (if exists), 3. null
   if (row.manifestRetail !== null && typeof row.manifestRetail === 'number') {
@@ -2188,13 +2187,13 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     row.retail = allocationGroup.unitRetail;
   }
 
-  // Preserve source extended retail from manifest if available
+  // Preserve source extended retail from manifest if available - sum all valid values
   if (manifestContext && manifestContext.manifestSession && manifestContext.manifestSession.rows) {
-    const extRetailFromManifest = manifestRows
+    const extRetailValues = manifestRows
       .map(r => r.normalized.extendedRetail)
-      .find(v => v !== null && typeof v === 'number');
-    if (extRetailFromManifest !== undefined) {
-      row.manifestExtendedRetail = extRetailFromManifest;
+      .filter(v => v !== null && typeof v === 'number');
+    if (extRetailValues.length > 0) {
+      row.manifestExtendedRetail = extRetailValues.reduce((sum, v) => sum + v, 0);
     }
   }
 
@@ -2256,15 +2255,22 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     row.dataSource = 'MANUAL';
   }
 
-  // Timestamp from allocation record (use earliest/latest from records)
+  // Timestamp from allocation record (use earliest timestamp for createdAt, latest updatedAt for updatedAt)
   if (allocationGroup.records && Array.isArray(allocationGroup.records) && allocationGroup.records.length > 0) {
-    const timestamps = allocationGroup.records
+    const createdTimestamps = allocationGroup.records
       .map(r => r.timestamp)
       .filter(t => t);
-    if (timestamps.length > 0) {
-      const sorted = timestamps.sort();
-      row.createdAt = sorted[0];
-      row.updatedAt = sorted[sorted.length - 1];
+    const updatedTimestamps = allocationGroup.records
+      .map(r => r.updatedAt || r.timestamp)
+      .filter(t => t);
+
+    if (createdTimestamps.length > 0) {
+      const sortedCreated = createdTimestamps.sort();
+      row.createdAt = sortedCreated[0];
+    }
+    if (updatedTimestamps.length > 0) {
+      const sortedUpdated = updatedTimestamps.sort();
+      row.updatedAt = sortedUpdated[sortedUpdated.length - 1];
       row.timestamp = row.updatedAt;
     }
   }
@@ -5848,17 +5854,18 @@ function runPhase4Tests() {
     console.log(`✗ DEFECT 1 error: ${e.message}\n`);
   }
 
-  // DEFECT 2: SKU should preserve manifestSku field for reference
+  // DEFECT 2: Manifest SKU must override allocation SKU
   try {
-    const testSession = { rows: [{ normalized: { upc: '101', sku: 'MANF-SKU', expectedQty: 10 } }], allocationRecords: [] };
+    const testSession = { rows: [{ normalized: { upc: '101', sku: 'MAN-123', expectedQty: 10 } }], allocationRecords: [] };
     const group = {
       upc: '101',
+      sku: 'ALLOC-999',
       totalQuantity: 5,
       records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
     };
     const row = buildDestinationOutputRow(group, { manifestSession: testSession });
-    results['DEFECT 2: manifestSku preserved'] = row.manifestSku === 'MANF-SKU' && row.sku === 'MANF-SKU';
-    console.log(`${results['DEFECT 2: manifestSku preserved'] ? '✓' : '✗'} DEFECT 2 manifestSku: ${row.manifestSku}\n`);
+    results['DEFECT 2: manifestSku preserved'] = row.manifestSku === 'MAN-123' && row.sku === 'MAN-123';
+    console.log(`${results['DEFECT 2: manifestSku preserved'] ? '✓' : '✗'} DEFECT 2 manifestSku override: manifest=${row.manifestSku}, canon=${row.sku}\n`);
   } catch (e) {
     results['DEFECT 2: manifestSku preserved'] = false;
     console.log(`✗ DEFECT 2 error: ${e.message}\n`);
@@ -5886,10 +5893,13 @@ function runPhase4Tests() {
     console.log(`✗ DEFECT 3 error: ${e.message}\n`);
   }
 
-  // DEFECT 4: Extended retail should prefer source value over calculation
+  // DEFECT 4: Extended retail must sum all source values
   try {
     const testSession = {
-      rows: [{ rowId: 0, normalized: { upc: '103', extendedRetail: 500.00, expectedQty: 10, unitRetail: 50 } }],
+      rows: [
+        { rowId: 0, normalized: { upc: '103', extendedRetail: 300.00, expectedQty: 10, unitRetail: 30 } },
+        { rowId: 1, normalized: { upc: '103', extendedRetail: 400.00, expectedQty: 10, unitRetail: 40 } }
+      ],
       allocationRecords: []
     };
     const group = {
@@ -5898,14 +5908,14 @@ function runPhase4Tests() {
       records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
     };
     const row = buildDestinationOutputRow(group, { manifestSession: testSession });
-    results['DEFECT 4: extendedRetail source'] = row.manifestExtendedRetail === 500.00;
-    console.log(`${results['DEFECT 4: extendedRetail source'] ? '✓' : '✗'} DEFECT 4 extendedRetail: ${row.manifestExtendedRetail}\n`);
+    results['DEFECT 4: extendedRetail source'] = row.manifestExtendedRetail === 700.00;
+    console.log(`${results['DEFECT 4: extendedRetail source'] ? '✓' : '✗'} DEFECT 4 extendedRetail sum: ${row.manifestExtendedRetail} (expected 700)\n`);
   } catch (e) {
     results['DEFECT 4: extendedRetail source'] = false;
     console.log(`✗ DEFECT 4 error: ${e.message}\n`);
   }
 
-  // DEFECT 5: Conflicting retail values should use first valid value
+  // DEFECT 5: Conflicting retail values must set manifestRetail=null and preserve all in manifestRetailValues
   try {
     const testSession = {
       rows: [
@@ -5920,8 +5930,10 @@ function runPhase4Tests() {
       records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
     };
     const row = buildDestinationOutputRow(group, { manifestSession: testSession });
-    results['DEFECT 5: conflicting retail'] = row.manifestRetail === 19.99;
-    console.log(`${results['DEFECT 5: conflicting retail'] ? '✓' : '✗'} DEFECT 5 conflicting retail: ${row.manifestRetail}\n`);
+    const hasConflictNull = row.manifestRetail === null;
+    const hasValues = row.manifestRetailValues.length === 2 && row.manifestRetailValues.includes(19.99) && row.manifestRetailValues.includes(29.99);
+    results['DEFECT 5: conflicting retail'] = hasConflictNull && hasValues;
+    console.log(`${results['DEFECT 5: conflicting retail'] ? '✓' : '✗'} DEFECT 5 conflicting: retail=${row.manifestRetail}, values=${JSON.stringify(row.manifestRetailValues)}\n`);
   } catch (e) {
     results['DEFECT 5: conflicting retail'] = false;
     console.log(`✗ DEFECT 5 error: ${e.message}\n`);
@@ -5940,6 +5952,23 @@ function runPhase4Tests() {
   } catch (e) {
     results['DEFECT 6: no timestamp fabrication'] = false;
     console.log(`✗ DEFECT 6 error: ${e.message}\n`);
+  }
+
+  // DEFECT 6b: updatedAt must use record.updatedAt when newer
+  try {
+    const group = {
+      upc: '105b',
+      totalQuantity: 2,
+      records: [
+        { sourceRowNumbers: [1], timestamp: '2026-10-01T10:00:00Z', updatedAt: '2026-10-03T15:00:00Z', identificationMethod: 'barcode' }
+      ]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['DEFECT 6b: updatedAt provenance'] = row.createdAt === '2026-10-01T10:00:00Z' && row.updatedAt === '2026-10-03T15:00:00Z';
+    console.log(`${results['DEFECT 6b: updatedAt provenance'] ? '✓' : '✗'} DEFECT 6b updatedAt: created=${row.createdAt}, updated=${row.updatedAt}\n`);
+  } catch (e) {
+    results['DEFECT 6b: updatedAt provenance'] = false;
+    console.log(`✗ DEFECT 6b error: ${e.message}\n`);
   }
 
   // DEFECT 7: Column reorder should use sorted view order
@@ -6148,6 +6177,82 @@ function runPhase4Tests() {
   } catch (e) {
     results['extended retail fallback'] = false;
     console.log(`✗ Extended retail fallback error: ${e.message}\n`);
+  }
+
+  // Targeted Test: Allocation SKU used when manifest absent
+  try {
+    const testSession = { rows: [], allocationRecords: [] };
+    const group = {
+      upc: '300',
+      sku: 'ALLOC-ONLY',
+      totalQuantity: 2,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'manual' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['allocation SKU fallback'] = row.sku === 'ALLOC-ONLY' && row.manifestSku === '';
+    console.log(`${results['allocation SKU fallback'] ? '✓' : '✗'} Allocation SKU fallback: ${row.sku}\n`);
+  } catch (e) {
+    results['allocation SKU fallback'] = false;
+    console.log(`✗ Allocation SKU fallback error: ${e.message}\n`);
+  }
+
+  // Targeted Test: Equal retail values resolve to single value
+  try {
+    const testSession = {
+      rows: [
+        { rowId: 0, normalized: { upc: '301', unitRetail: 15.99 } },
+        { rowId: 1, normalized: { upc: '301', unitRetail: 15.99 } }
+      ],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '301',
+      totalQuantity: 3,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['equal retail resolve'] = row.manifestRetail === 15.99 && row.manifestRetailValues.length === 1;
+    console.log(`${results['equal retail resolve'] ? '✓' : '✗'} Equal retail resolve: ${row.manifestRetail}\n`);
+  } catch (e) {
+    results['equal retail resolve'] = false;
+    console.log(`✗ Equal retail resolve error: ${e.message}\n`);
+  }
+
+  // Targeted Test: Source extended retail beats calculated fallback
+  try {
+    const testSession = {
+      rows: [{ rowId: 0, normalized: { upc: '302', extendedRetail: 250.00, unitRetail: 50 } }],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '302',
+      totalQuantity: 10,
+      unitRetail: 50,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['source extendedRetail wins'] = row.manifestExtendedRetail === 250.00 && row.extendedRetail !== 500.00;
+    console.log(`${results['source extendedRetail wins'] ? '✓' : '✗'} Source extends wins: manifest=${row.manifestExtendedRetail}, canon=${row.extendedRetail}\n`);
+  } catch (e) {
+    results['source extendedRetail wins'] = false;
+    console.log(`✗ Source extended retail error: ${e.message}\n`);
+  }
+
+  // Targeted Test: Fallback calc only when no source extended retail
+  try {
+    const testSession = { rows: [], allocationRecords: [] };
+    const group = {
+      upc: '303',
+      totalQuantity: 6,
+      unitRetail: 20.00,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'manual' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['fallback calc present'] = row.extendedRetail === 120.00 && row.manifestExtendedRetail === null;
+    console.log(`${results['fallback calc present'] ? '✓' : '✗'} Fallback calc: extended=${row.extendedRetail}\n`);
+  } catch (e) {
+    results['fallback calc present'] = false;
+    console.log(`✗ Fallback calc error: ${e.message}\n`);
   }
 
   // Summary
