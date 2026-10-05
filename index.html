@@ -596,21 +596,9 @@ function searchFromScan(){
   if(!v){ toast('⚠️ Enter a UPC'); return; }
   stopScanner();
 
-  // PHASE 5A: If in unified receiving, use product review flow
+  // PHASE 5A DEFECT 1 FIX: If in unified receiving, use unified enrichment flow
   if (manifestSession && manifestSession.receivingActive) {
-    receivingState.currentProduct = {
-      upc: v,
-      sku: '',
-      description: '',
-      qty: 1,
-      retail: null,
-      ropa: '',
-      notes: '',
-      identificationMethod: 'barcode',
-      source: manifestSession.isManifestLoaded ? 'MANIFEST' : 'MANUAL'
-    };
-    renderProductReview();
-    showScreen('scr-product-review');
+    identifyReceivingByUpc(v, 'barcode');
   } else if (manifestSession && manifestSession.status === 'ready') {
     searchReceivingProduct(v, 'barcode');
   } else {
@@ -1846,7 +1834,11 @@ async function handlePhotoFileSelected(fileInput){
 function renderPhotoCandidates(candidates){
   const el = $('photo-candidates-content');
   if(!el) return;
-  el.innerHTML = candidates.map(c => {
+
+  // DEFECT 4 FIX: Store candidates globally for context retrieval
+  window._photoCandidates = candidates;
+
+  el.innerHTML = candidates.map((c, idx) => {
     const imgUrl = c.image ? String(c.image) : '';
     const img = imgUrl
       ? `<img class="img" src="${imgUrl}" onerror="this.style.display='none'">`
@@ -1865,7 +1857,7 @@ function renderPhotoCandidates(candidates){
         <div class="rank">Possible Match #${rankNum || ''}</div>
         <div class="title"></div>
         ${price}
-        <button class="btn" data-item-id="${itemId.replace(/"/g,'&quot;')}" data-rank="${rankNum}" onclick="selectPhotoCandidate(this.dataset.itemId, parseInt(this.dataset.rank,10))" ontouchend="event.preventDefault();selectPhotoCandidate(this.dataset.itemId, parseInt(this.dataset.rank,10))">Select Product</button>
+        <button class="btn" data-item-id="${itemId.replace(/"/g,'&quot;')}" data-rank="${rankNum}" data-candidate-idx="${idx}" onclick="selectPhotoCandidateWithContext(this.dataset.itemId, parseInt(this.dataset.rank,10), parseInt(this.dataset.candidateIdx,10))" ontouchend="event.preventDefault();selectPhotoCandidateWithContext(this.dataset.itemId, parseInt(this.dataset.rank,10), parseInt(this.dataset.candidateIdx,10))">Select Product</button>
       </div>
     </div>`;
   }).join('');
@@ -1879,11 +1871,29 @@ function renderPhotoCandidates(candidates){
   });
 }
 
+// DEFECT 4 FIX: Wrapper to save candidate context before verification
+function selectPhotoCandidateWithContext(itemId, rank, candidateIdx) {
+  const candidates = window._photoCandidates || [];
+  if (candidateIdx >= 0 && candidateIdx < candidates.length) {
+    const candidate = candidates[candidateIdx];
+    window._photoCandidate = {
+      itemId: itemId,
+      title: candidate.title || '',
+      image: candidate.image || '',
+      price: (candidate.price && candidate.price.value) ? parseFloat(candidate.price.value) : null
+    };
+  }
+  selectPhotoCandidate(itemId, rank);
+}
+
 async function selectPhotoCandidate(itemId, rank){
   if(!itemId){ toast('⚠️ Invalid candidate'); return; }
 
   showScreen('scr-load');
   $('load-msg').textContent = 'Verifying product...';
+
+  // DEFECT 4 FIX: Save candidate context before verification
+  const candidateData = window._photoCandidate || {};
 
   try {
     const res = await identifyPhotoFetch('/api/identify-by-photo/verify', {
@@ -1900,21 +1910,79 @@ async function selectPhotoCandidate(itemId, rank){
     const data = await res.json().catch(() => ({}));
 
     if(!res.ok || data.status === 'error'){
+      // DEFECT 5 FIX: For receiving, use candidate data even if verify fails
+      if (manifestSession && manifestSession.receivingActive && candidateData) {
+        receivingState.currentProduct = {
+          upc: '',
+          sku: '',
+          description: candidateData.title || '',
+          qty: 1,
+          retail: candidateData.price || null,
+          ropa: '',
+          notes: '',
+          identificationMethod: 'photo',
+          manifest: null,
+          ebay: {
+            matched: true,
+            title: candidateData.title || '',
+            brand: '',
+            category: '',
+            image: candidateData.image || '',
+            itemId: candidateData.itemId || itemId
+          },
+          ebayMarket: null,
+          dataSource: 'EBAY'
+        };
+        renderProductReview();
+        showScreen('scr-product-review');
+        sendPhotoFeedback('photo_receiving_partial');
+        return;
+      }
       showPhotoVerifyFailed('Verification failed. Please try again or enter the UPC manually.');
       return;
     }
 
-    // PHASE 5A: If in receiving mode, use product review flow
+    // PHASE 5A DEFECT 5: If in receiving mode, use product review flow
     if (manifestSession && manifestSession.receivingActive) {
-      // Photo verification result data
-      const title = data.title || data.productName || '';
-      const imageUrl = data.imageUrl || '';
+      // Photo verification result data - DEFECT 5: Merge verify data with candidate
+      const title = data.title || candidateData.title || '';
+      const imageUrl = data.imageUrl || candidateData.image || '';
       const upc = data.upc ? String(data.upc) : '';
       const sku = data.sku || '';
-      const price = data.price || null;
+      const price = data.price || candidateData.price || null;
 
+      // If verified UPC, use enrichment flow
+      if (upc) {
+        receivingState.currentProduct = {
+          upc: upc,
+          sku: sku,
+          description: title,
+          qty: 1,
+          retail: price,
+          ropa: '',
+          notes: '',
+          identificationMethod: 'photo',
+          manifest: null,
+          ebay: {
+            matched: true,
+            title: title,
+            brand: '',
+            category: '',
+            image: imageUrl,
+            itemId: itemId
+          },
+          ebayMarket: null,
+          dataSource: 'EBAY'
+        };
+        renderProductReview();
+        showScreen('scr-product-review');
+        sendPhotoFeedback('photo_upc_verified');
+        return;
+      }
+
+      // No UPC - use available candidate data
       receivingState.currentProduct = {
-        upc: upc,
+        upc: '',
         sku: sku,
         description: title,
         qty: 1,
@@ -1922,14 +1990,22 @@ async function selectPhotoCandidate(itemId, rank){
         ropa: '',
         notes: '',
         identificationMethod: 'photo',
-        source: 'MANUAL',
-        imageUrl: imageUrl,
-        itemId: itemId
+        manifest: null,
+        ebay: {
+          matched: true,
+          title: title,
+          brand: '',
+          category: '',
+          image: imageUrl,
+          itemId: itemId
+        },
+        ebayMarket: null,
+        dataSource: 'EBAY'
       };
 
       renderProductReview();
       showScreen('scr-product-review');
-      sendPhotoFeedback('photo_receiving_used');
+      sendPhotoFeedback('photo_receiving_partial');
       return;
     }
 
@@ -3894,6 +3970,117 @@ function calculateProductKey(upc, sku, productId) {
   return 'MANUAL:' + (productId || '');
 }
 
+// PHASE 5A DEFECT FIXES: Unified async enrichment helper
+async function identifyReceivingByUpc(upc, identificationMethod) {
+  if (!upc) {
+    toast('⚠️ No UPC provided');
+    return false;
+  }
+
+  showScreen('scr-load');
+  $('load-msg').textContent = 'Looking up product...';
+
+  try {
+    // Manifest lookup first (if available)
+    let manifestMatch = null;
+    let manifestRows = [];
+    if (manifestSession?.isManifestLoaded && manifestSession.rows) {
+      const normalizedUpc = normalizeManifestIdentifier(upc);
+      manifestRows = manifestSession.rows.filter(r =>
+        r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc
+      );
+      if (manifestRows.length > 0) {
+        manifestMatch = manifestRows[0];
+      }
+    }
+
+    // Online identification (eBay)
+    const onlineResult = await identifyUpcOnline(upc);
+
+    // Build receiving product with all enrichment
+    receivingState.currentProduct = {
+      upc: upc,
+      sku: manifestMatch?.normalized?.sku || onlineResult?.identity?.sku || '',
+      description: manifestMatch?.normalized?.title || onlineResult?.identity?.title || '',
+      qty: 1,
+      retail: manifestMatch?.normalized?.unitRetail || onlineResult?.market?.averagePrice || null,
+      ropa: '',
+      notes: '',
+      identificationMethod: identificationMethod || 'barcode',
+
+      // Manifest enrichment
+      manifest: manifestMatch ? {
+        matched: true,
+        rows: manifestRows,
+        expectedQty: manifestRows.reduce((sum, r) => {
+          const qty = r.normalized.expectedQty;
+          return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
+        }, 0),
+        sku: manifestMatch.normalized.sku || '',
+        description: manifestMatch.normalized.title || '',
+        retail: manifestMatch.normalized.unitRetail || null,
+        category: manifestMatch.normalized.category || '',
+        sourceRows: manifestRows.map(r => r.sourceRowNumber)
+      } : null,
+
+      // eBay enrichment
+      ebay: onlineResult?.identity ? {
+        matched: true,
+        title: onlineResult.identity.title || '',
+        brand: onlineResult.identity.brand || '',
+        category: onlineResult.identity.category || '',
+        image: onlineResult.identity.image || '',
+        itemId: onlineResult.identity.itemId || ''
+      } : null,
+
+      // eBay market data
+      ebayMarket: onlineResult?.market ? {
+        low: onlineResult.market.lowPrice || null,
+        average: onlineResult.market.averagePrice || null,
+        high: onlineResult.market.highPrice || null,
+        matches: onlineResult.market.matchCount || 0
+      } : null,
+
+      // Data source classification
+      dataSource: (manifestMatch ? 'MANIFEST' : '') +
+                  (onlineResult?.identity ? (manifestMatch ? '+EBAY' : 'EBAY') : (manifestMatch ? '' : 'MANUAL'))
+    };
+
+    // Normalize dataSource
+    if (receivingState.currentProduct.dataSource === '') {
+      receivingState.currentProduct.dataSource = 'MANUAL';
+    }
+
+    renderProductReview();
+    showScreen('scr-product-review');
+    return true;
+
+  } catch (err) {
+    console.error('identifyReceivingByUpc error:', err);
+    toast('⚠️ Lookup failed, showing basic entry');
+
+    // Fallback to basic product
+    receivingState.currentProduct = {
+      upc: upc,
+      sku: '',
+      description: '',
+      qty: 1,
+      retail: null,
+      ropa: '',
+      notes: '',
+      identificationMethod: identificationMethod || 'manual_upc',
+      manifest: null,
+      ebay: null,
+      ebayMarket: null,
+      dataSource: 'MANUAL'
+    };
+
+    renderProductReview();
+    showScreen('scr-product-review');
+    return true;
+  }
+}
+
 function recordAllocation(manifestSession, upc, sku, quantity, destination, identificationMethod, matchRows, title, category, unitRetail, overageData, productId) {
   if (!manifestSession || !manifestSession.allocationRecords) return null;
 
@@ -5746,43 +5933,50 @@ function submitUpcSkuEntry() {
   const isNumeric = /^\d+$/.test(identifier);
 
   if (isNumeric) {
-    // Treat as UPC - look up using normal UPC search
-    receivingState.currentProduct = {
-      upc: identifier,
-      sku: '',
-      description: '',
-      qty: 1,
-      retail: null,
-      ropa: '',
-      notes: '',
-      identificationMethod: 'manual_upc',
-      source: 'UPC_SKU'
-    };
+    // DEFECT 2 FIX: Numeric UPC - use unified enrichment helper
+    identifyReceivingByUpc(identifier, 'manual_upc');
   } else {
-    // Treat as SKU - look for exact manifest match if available
-    let found = false;
+    // DEFECT 15 FIX: Treat as SKU - preserve all matching rows
+    let manifestRows = [];
     if (manifestSession?.isManifestLoaded && manifestSession.rows) {
-      const match = manifestSession.rows.find(r =>
-        r.normalized && normalizeManifestIdentifier(r.normalized.sku) === normalizeManifestIdentifier(identifier)
+      const normalizedTarget = normalizeManifestIdentifier(identifier);
+      manifestRows = manifestSession.rows.filter(r =>
+        r.normalized && normalizeManifestIdentifier(r.normalized.sku) === normalizedTarget
       );
-      if (match) {
-        receivingState.currentProduct = {
-          upc: match.normalized.upc || '',
-          sku: match.normalized.sku || identifier,
-          description: match.normalized.title || '',
-          qty: 1,
-          retail: match.normalized.unitRetail || null,
-          ropa: '',
-          notes: '',
-          identificationMethod: 'manual_sku',
-          source: 'MANIFEST',
-          manifestRowId: match.rowId
-        };
-        found = true;
-      }
     }
 
-    if (!found) {
+    if (manifestRows.length > 0) {
+      // DEFECT 15: Preserve all duplicate SKU rows, use expectedQtyTotal
+      const firstRow = manifestRows[0];
+      const expectedQtyTotal = manifestRows.reduce((sum, r) => {
+        const qty = r.normalized.expectedQty;
+        return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
+      }, 0);
+
+      receivingState.currentProduct = {
+        upc: firstRow.normalized.upc || '',
+        sku: firstRow.normalized.sku || identifier,
+        description: firstRow.normalized.title || '',
+        qty: 1,
+        retail: firstRow.normalized.unitRetail || null,
+        ropa: '',
+        notes: '',
+        identificationMethod: 'manual_sku',
+        manifest: {
+          matched: true,
+          rows: manifestRows,
+          expectedQty: expectedQtyTotal,
+          sku: firstRow.normalized.sku || '',
+          description: firstRow.normalized.title || '',
+          retail: firstRow.normalized.unitRetail || null,
+          category: firstRow.normalized.category || '',
+          sourceRows: manifestRows.map(r => r.sourceRowNumber)
+        },
+        ebay: null,
+        ebayMarket: null,
+        dataSource: 'MANIFEST'
+      };
+    } else {
       // No manifest match - create product from SKU
       receivingState.currentProduct = {
         upc: '',
@@ -5793,7 +5987,10 @@ function submitUpcSkuEntry() {
         ropa: '',
         notes: '',
         identificationMethod: 'manual_sku',
-        source: 'MANUAL'
+        manifest: null,
+        ebay: null,
+        ebayMarket: null,
+        dataSource: 'MANUAL'
       };
     }
   }
