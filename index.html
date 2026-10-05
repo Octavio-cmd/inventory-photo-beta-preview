@@ -352,7 +352,7 @@
 
 <!-- PHOTO IDENTIFY: CAPTURE SCREEN (BETA) -->
 <div class="scr" id="scr-photo-capture">
-  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromPhotoFlow()" ontouchend="event.preventDefault();backFromPhotoFlow()">← Back</button>
   <div style="text-align:center;margin-bottom:16px">
     <h2 style="font-size:18px;font-weight:800">Identify by Photo<span class="beta-tag">BETA</span></h2>
     <p style="font-size:13px;color:var(--mu);margin-top:6px">Take a clear photo of the product. This finds possible matches — it does not confirm inventory.</p>
@@ -368,7 +368,7 @@
 
 <!-- PHOTO IDENTIFY: CANDIDATES SCREEN (BETA) -->
 <div class="scr" id="scr-photo-candidates">
-  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Cancel</button>
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromPhotoFlow()" ontouchend="event.preventDefault();backFromPhotoFlow()">← Cancel</button>
   <div style="margin-bottom:12px">
     <div style="font-size:16px;font-weight:800">Possible Matches</div>
     <div style="font-size:12px;color:var(--mu);margin-top:4px">Select the product that matches your photo.</div>
@@ -379,7 +379,7 @@
 
 <!-- PHOTO IDENTIFY: VERIFICATION FAILED SCREEN (BETA) -->
 <div class="scr" id="scr-photo-verify-fail">
-  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <button class="btn sec" style="margin-bottom:12px" onclick="backFromPhotoFlow()" ontouchend="event.preventDefault();backFromPhotoFlow()">← Back</button>
   <div class="empty">
     <div class="icon">⚠️</div>
     <h2 style="margin-bottom:8px">Cannot verify this product in Inventory.</h2>
@@ -571,8 +571,10 @@ function openScanner(){
     {fps:15, qrbox:{width:280,height:100}},
     (decodedText) => {
       stopScanner();
-      // PHASE 2: If manifest is active, use manifest-first search
-      if (manifestSession && manifestSession.status === 'ready') {
+      // PHASE 5A: Route to unified receiving if active, else old flow
+      if (manifestSession && manifestSession.receivingActive) {
+        identifyReceivingByUpc(decodedText.trim(), 'barcode');
+      } else if (manifestSession && manifestSession.status === 'ready') {
         searchReceivingProduct(decodedText.trim(), 'barcode');
       } else {
         searchUPC(decodedText.trim());
@@ -1910,8 +1912,9 @@ async function selectPhotoCandidate(itemId, rank){
     const data = await res.json().catch(() => ({}));
 
     if(!res.ok || data.status === 'error'){
-      // DEFECT 5 FIX: For receiving, use candidate data even if verify fails
-      if (manifestSession && manifestSession.receivingActive && candidateData) {
+      // DEFECT 5 FIX: For receiving, use candidate data even if verify fails (explicit validation)
+      if (manifestSession && manifestSession.receivingActive &&
+          candidateData && (candidateData.itemId || candidateData.title || candidateData.image)) {
         receivingState.currentProduct = {
           upc: '',
           sku: '',
@@ -4033,23 +4036,19 @@ async function identifyReceivingByUpc(upc, identificationMethod) {
         itemId: onlineResult.identity.itemId || ''
       } : null,
 
-      // eBay market data
-      ebayMarket: onlineResult?.market ? {
-        low: onlineResult.market.lowPrice || null,
-        average: onlineResult.market.averagePrice || null,
-        high: onlineResult.market.highPrice || null,
-        matches: onlineResult.market.matchCount || 0
+      // eBay market data — correct shape is market.ebay
+      ebayMarket: onlineResult?.market?.ebay ? {
+        low: onlineResult.market.ebay.low || null,
+        average: onlineResult.market.ebay.average || null,
+        high: onlineResult.market.ebay.high || null,
+        matches: onlineResult.market.ebay.matches || 0
       } : null,
 
-      // Data source classification
-      dataSource: (manifestMatch ? 'MANIFEST' : '') +
-                  (onlineResult?.identity ? (manifestMatch ? '+EBAY' : 'EBAY') : (manifestMatch ? '' : 'MANUAL'))
+      // Data source classification — explicit enum (never concatenated)
+      dataSource: manifestMatch && onlineResult?.identity ? 'BOTH' :
+                  manifestMatch ? 'MANIFEST' :
+                  onlineResult?.identity ? 'EBAY' : 'MANUAL'
     };
-
-    // Normalize dataSource
-    if (receivingState.currentProduct.dataSource === '') {
-      receivingState.currentProduct.dataSource = 'MANUAL';
-    }
 
     renderProductReview();
     showScreen('scr-product-review');
@@ -6119,27 +6118,47 @@ function renderProductReview() {
 
   html += '</div>';
 
-  // Manifest enrichment panel (if manifest loaded)
-  if (manifestSession?.isManifestLoaded) {
-    let manifestMatch = null;
-    if (product.upc) {
-      const normalized = normalizeManifestIdentifier(product.upc);
-      manifestMatch = manifestSession.rows.find(r => r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalized);
-    } else if (product.sku) {
-      const normalized = normalizeManifestIdentifier(product.sku);
-      manifestMatch = manifestSession.rows.find(r => r.normalized && normalizeManifestIdentifier(r.normalized.sku) === normalized);
-    }
+  // DEFECT 7: Enrichment panels — manifest and eBay data
+  html += '<div style="margin-bottom:16px"><h3 style="font-size:13px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Enrichment Data</h3>';
 
-    html += '<div style="background:var(--sf2);border-radius:12px;padding:16px;margin-bottom:16px;border-left:3px solid var(--gd)">';
-    if (manifestMatch) {
-      html += '<div style="font-size:12px;color:var(--gd);font-weight:700;margin-bottom:8px">✓ Found in Manifest</div>';
-      html += '<div style="font-size:12px;color:var(--mu)">Row ' + (manifestMatch.sourceRowNumber || '?') + ': ';
-      html += escapeHtml(manifestMatch.normalized.title || '') + '</div>';
-    } else {
-      html += '<div style="font-size:12px;color:var(--mu)">ℹ️ Not found in manifest</div>';
+  // Manifest panel
+  if (product.manifest && product.manifest.matched) {
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:12px;margin-bottom:12px;border-left:4px solid var(--sv)">';
+    html += '<div style="font-size:12px;color:var(--sv);font-weight:700;margin-bottom:8px">✓ Manifest Match</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>SKU:</strong> ' + escapeHtml(product.manifest.sku || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Description:</strong> ' + escapeHtml(product.manifest.description || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Expected Qty:</strong> ' + (product.manifest.expectedQty || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Retail:</strong> $' + ((product.manifest.retail || 0).toFixed(2)) + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu)"><strong>Category:</strong> ' + escapeHtml(product.manifest.category || '—') + '</div>';
+    html += '</div>';
+  } else {
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:12px;margin-bottom:12px;border-left:4px solid #999;color:#666"><div style="font-size:11px">No manifest match</div></div>';
+  }
+
+  // eBay panel
+  if (product.ebay && product.ebay.matched) {
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:12px;margin-bottom:12px;border-left:4px solid var(--gd)">';
+    html += '<div style="font-size:12px;color:var(--gd);font-weight:700;margin-bottom:8px">✓ eBay Match</div>';
+    if (product.ebay.image) {
+      html += '<img src="' + escapeHtml(product.ebay.image) + '" style="max-width:100px;border-radius:6px;margin-bottom:8px">';
+    }
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Title:</strong> ' + escapeHtml(product.ebay.title || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Brand:</strong> ' + escapeHtml(product.ebay.brand || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Category:</strong> ' + escapeHtml(product.ebay.category || '—') + '</div>';
+    html += '<div style="font-size:11px;color:var(--mu);margin-bottom:6px"><strong>Item ID:</strong> ' + escapeHtml(product.ebay.itemId || '—') + '</div>';
+    if (product.ebayMarket) {
+      html += '<div style="background:var(--sf);border-radius:6px;padding:8px;margin-top:8px">';
+      html += '<div style="font-size:11px;color:var(--mu);margin-bottom:4px"><strong>Market Range:</strong> $' + (product.ebayMarket.low || '?') + ' – $' + (product.ebayMarket.high || '?') + '</div>';
+      html += '<div style="font-size:11px;color:var(--mu);margin-bottom:4px"><strong>Average:</strong> $' + ((product.ebayMarket.average || 0).toFixed(2)) + '</div>';
+      html += '<div style="font-size:11px;color:var(--mu)"><strong>Listings:</strong> ' + (product.ebayMarket.matches || 0) + '</div>';
+      html += '</div>';
     }
     html += '</div>';
+  } else {
+    html += '<div style="background:var(--sf2);border-radius:12px;padding:12px;border-left:4px solid #999;color:#666"><div style="font-size:11px">No eBay match</div></div>';
   }
+
+  html += '</div>';
 
   // Editable fields
   html += '<div style="margin-bottom:20px">';
@@ -6227,8 +6246,16 @@ function confirmProductReview() {
     return;
   }
 
+  // Gather manifest row IDs if matched (DEFECT 6)
+  let manifestRowIds = [];
+  let sourceRowNumbers = [];
+  if (product.manifest && product.manifest.matched && product.manifest.rows) {
+    manifestRowIds = product.manifest.rows.map(row => row.id || row.rowIndex);
+    sourceRowNumbers = product.manifest.sourceRows || [];
+  }
+
   // For no-manifest sessions, don't calculate overage
-  let overageData = { dataSource: product.source || 'MANUAL' };
+  let overageData = { dataSource: product.dataSource || 'MANUAL' };
   if (manifestSession?.isManifestLoaded && manifestSession.rows.length > 0) {
     // Check for manifest overage only if manifest exists
     const normalizedUpc = normalizeManifestIdentifier(upc);
@@ -6248,7 +6275,7 @@ function confirmProductReview() {
     }
   }
 
-  // Create allocation record
+  // Create allocation record with manifest linkage
   const record = recordAllocation(
     manifestSession,
     upc,
@@ -6256,7 +6283,7 @@ function confirmProductReview() {
     qty,
     destination,
     product.identificationMethod,
-    [],  // No manifest row IDs for manual products
+    manifestRowIds,  // DEFECT 6: Pass actual manifest row IDs
     desc,
     '',
     retail,
@@ -6271,6 +6298,15 @@ function confirmProductReview() {
     showScreen('scr-receiving-workspace');
   } else {
     toast('❌ Failed to create allocation');
+  }
+}
+
+function backFromPhotoFlow() {
+  // Return to receiving workspace if active, else home
+  if (manifestSession && manifestSession.receivingActive) {
+    backToReceivingWorkspace();
+  } else {
+    showScreen('scr-home');
   }
 }
 
