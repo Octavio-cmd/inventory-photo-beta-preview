@@ -4396,6 +4396,20 @@ function editAllocationRow(upc, destination) {
   renderDestinationManifest(destination);
 }
 
+// DEFECT 8: Remove allocation group by productKey
+function removeAllocationGroup(productKey, destination) {
+  if (!confirm('Remove all allocations for this group from ' + destination + '?')) return;
+
+  const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === destination);
+  records.forEach(record => {
+    removeAllocation(manifestSession, record.id);
+  });
+
+  toast('✅ Allocation group removed');
+  renderDestinationManifest(destination);
+}
+
+// Legacy UPC-based version (backward compatibility)
 function removeAllocationsByUpc(upc, destination) {
   if (!confirm('Remove all allocations for ' + upc + ' from ' + destination + '?')) return;
 
@@ -4408,6 +4422,43 @@ function removeAllocationsByUpc(upc, destination) {
   renderDestinationManifest(destination);
 }
 
+// DEFECT 8: Change allocation group destination by productKey
+function changeAllocationGroupDestination(productKey, currentDestination) {
+  const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === currentDestination);
+  if (records.length === 0) return;
+
+  const totalQty = records.reduce((sum, r) => sum + r.quantity, 0);
+  const destinations = ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED'];
+  const availableDestinations = destinations.filter(d => d !== currentDestination).join(', ');
+  const newDest = prompt('Move ' + totalQty + ' units from ' + currentDestination + ' to:\n\n' + availableDestinations, 'SAVVY');
+
+  if (!newDest || !destinations.includes(newDest)) {
+    toast('⚠️ Invalid destination');
+    return;
+  }
+
+  if (newDest === currentDestination) {
+    toast('⚠️ Same destination');
+    return;
+  }
+
+  const confirmMsg = 'Move ' + totalQty + ' units from ' + currentDestination + ' to ' + newDest + '?';
+  if (!confirm(confirmMsg)) return;
+
+  // Update all records to new destination
+  records.forEach(record => {
+    updateAllocationDestination(manifestSession, record.id, newDest);
+  });
+
+  toast('✅ Moved ' + totalQty + ' units to ' + newDest);
+  renderDestinationManifest(currentDestination);
+  setTimeout(() => {
+    renderDestinationManifest(newDest);
+    showDestinationManifest(newDest);
+  }, 500);
+}
+
+// Legacy UPC-based version (backward compatibility)
 function changeAllocationDestination(upc, currentDestination) {
   const records = manifestSession.allocationRecords.filter(r => r.upc === upc && r.destination === currentDestination);
   if (records.length === 0) return;
