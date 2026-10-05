@@ -2088,33 +2088,68 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
   }
   row.sourceRowNumbers = Array.from(sourceRows).sort((a, b) => a - b);
   row.identificationMethods = Array.from(identMethods);
-  row.identificationMethod = row.identificationMethods.length === 1 ? row.identificationMethods[0] : 'mixed';
+  if (row.identificationMethods.length === 0) {
+    row.identificationMethod = '';
+  } else if (row.identificationMethods.length === 1) {
+    row.identificationMethod = row.identificationMethods[0];
+  } else {
+    row.identificationMethod = 'mixed';
+  }
 
   // Use manifest context to populate manifest-sourced fields
   let hasManifestData = false;
   let hasEbayData = false;
 
   if (manifestContext && manifestContext.manifestSession && manifestContext.manifestSession.rows) {
-    const normalizedUpc = normalizeManifestIdentifier(row.upc);
-    const manifestRows = manifestContext.manifestSession.rows.filter(r =>
-      r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc
-    );
+    let manifestRows = [];
+
+    // DEFECT 9 FIX: Prefer explicit manifestRowIds from records if available
+    const explicitRowIds = new Set();
+    if (allocationGroup.records && Array.isArray(allocationGroup.records)) {
+      allocationGroup.records.forEach(rec => {
+        if (rec.manifestRowIds && Array.isArray(rec.manifestRowIds)) {
+          rec.manifestRowIds.forEach(id => explicitRowIds.add(id));
+        }
+      });
+    }
+
+    if (explicitRowIds.size > 0) {
+      manifestRows = manifestContext.manifestSession.rows.filter(r => explicitRowIds.has(r.rowId));
+    } else {
+      const normalizedUpc = normalizeManifestIdentifier(row.upc);
+      manifestRows = manifestContext.manifestSession.rows.filter(r =>
+        r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc
+      );
+    }
 
     if (manifestRows.length > 0) {
       hasManifestData = true;
       const firstManifestRow = manifestRows[0];
 
       if (firstManifestRow.normalized.sku && !row.sku) {
+        row.manifestSku = firstManifestRow.normalized.sku;
         row.sku = firstManifestRow.normalized.sku;
       }
-      if (firstManifestRow.normalized.description) {
-        row.manifestDescription = firstManifestRow.normalized.description;
+      if (firstManifestRow.normalized.title) {
+        row.manifestDescription = firstManifestRow.normalized.title;
       }
-      if (firstManifestRow.normalized.expectedQty !== null && typeof firstManifestRow.normalized.expectedQty === 'number') {
-        row.manifestQty = firstManifestRow.normalized.expectedQty;
+      const totalManifestQty = manifestRows.reduce((sum, r) => {
+        const qty = r.normalized.expectedQty;
+        return sum + (typeof qty === 'number' && qty !== null ? qty : 0);
+      }, 0);
+      if (totalManifestQty > 0) {
+        row.manifestQty = totalManifestQty;
       }
-      if (firstManifestRow.normalized.unitRetail !== null && typeof firstManifestRow.normalized.unitRetail === 'number') {
-        row.manifestRetail = firstManifestRow.normalized.unitRetail;
+      const retailValues = manifestRows
+        .map(r => r.normalized.unitRetail)
+        .filter(v => v !== null && typeof v === 'number');
+      if (retailValues.length > 0) {
+        const allEqual = retailValues.every(v => v === retailValues[0]);
+        if (allEqual) {
+          row.manifestRetail = retailValues[0];
+        } else {
+          row.manifestRetail = retailValues[0];
+        }
       }
       if (firstManifestRow.normalized.category) {
         row.manifestCategory = firstManifestRow.normalized.category;
@@ -2153,13 +2188,23 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     row.retail = allocationGroup.unitRetail;
   }
 
-  // Extended retail calculation
-  if (row.retail !== null && typeof row.retail === 'number' && row.qty && typeof row.qty === 'number') {
+  // Preserve source extended retail from manifest if available
+  if (manifestContext && manifestContext.manifestSession && manifestContext.manifestSession.rows) {
+    const extRetailFromManifest = manifestRows
+      .map(r => r.normalized.extendedRetail)
+      .find(v => v !== null && typeof v === 'number');
+    if (extRetailFromManifest !== undefined) {
+      row.manifestExtendedRetail = extRetailFromManifest;
+    }
+  }
+
+  // Calculate extended retail for output qty only if manifest source not available
+  if (row.extendedRetail === null && row.retail !== null && typeof row.retail === 'number' && row.qty && typeof row.qty === 'number') {
     row.extendedRetail = row.qty * row.retail;
   }
 
-  // Populate manifest extended retail if manifest retail exists
-  if (row.manifestRetail !== null && typeof row.manifestRetail === 'number' && row.manifestQty && typeof row.manifestQty === 'number') {
+  // Calculate manifest extended retail if not already set and manifest retail exists
+  if (row.manifestExtendedRetail === null && row.manifestRetail !== null && typeof row.manifestRetail === 'number' && row.manifestQty && typeof row.manifestQty === 'number') {
     row.manifestExtendedRetail = row.manifestQty * row.manifestRetail;
   }
 
@@ -2197,12 +2242,15 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
     row.category = allocationGroup.category;
   }
 
-  // Explicit dataSource detection
-  if (hasManifestData && hasEbayData) {
+  // DEFECT 10 FIX: Explicit dataSource detection based on verified source markers
+  const hasVerifiedManifestData = row.manifestSku !== '' || row.manifestDescription !== '' || row.manifestQty !== null || row.manifestRetail !== null;
+  const hasVerifiedEbayData = row.ebayTitle !== '' || row.ebayLow !== null || row.ebayAverage !== null || row.ebayHigh !== null || row.ebayItemId !== '';
+
+  if (hasVerifiedManifestData && hasVerifiedEbayData) {
     row.dataSource = 'BOTH';
-  } else if (hasManifestData) {
+  } else if (hasVerifiedManifestData) {
     row.dataSource = 'MANIFEST';
-  } else if (hasEbayData) {
+  } else if (hasVerifiedEbayData) {
     row.dataSource = 'EBAY';
   } else {
     row.dataSource = 'MANUAL';
@@ -2219,9 +2267,6 @@ function buildDestinationOutputRow(allocationGroup, manifestContext) {
       row.updatedAt = sorted[sorted.length - 1];
       row.timestamp = row.updatedAt;
     }
-  }
-  if (!row.timestamp) {
-    row.timestamp = new Date().toISOString();
   }
 
   // Preserve expected quantity separately (from first record if available)
@@ -3879,7 +3924,13 @@ function getDestinationManifestRows(manifestSession, destination) {
   // Convert Sets to arrays and aggregate identificationMethod
   Object.values(byUpc).forEach(group => {
     const methods = Array.from(group.identificationMethods);
-    group.identificationMethod = methods.length === 1 ? methods[0] : 'mixed';
+    if (methods.length === 0) {
+      group.identificationMethod = '';
+    } else if (methods.length === 1) {
+      group.identificationMethod = methods[0];
+    } else {
+      group.identificationMethod = 'mixed';
+    }
     delete group.identificationMethods;
   });
 
@@ -4245,15 +4296,20 @@ function toggleOutputColumn(key, enabled) {
 function moveOutputColumn(key, direction) {
   if (!manifestSession || !manifestSession.outputConfig) return;
   const columns = manifestSession.outputConfig.columns;
-  const idx = columns.findIndex(c => c.key === key);
-  if (idx === -1) return;
+  const sorted = [...columns].sort((a, b) => a.order - b.order);
 
-  const newIdx = direction === 'up' ? idx - 1 : idx + 1;
-  if (newIdx < 0 || newIdx >= columns.length) return;
+  const currentIdx = sorted.findIndex(c => c.key === key);
+  if (currentIdx === -1) return;
 
-  const oldOrder = columns[idx].order;
-  columns[idx].order = columns[newIdx].order;
-  columns[newIdx].order = oldOrder;
+  const newIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
+  if (newIdx < 0 || newIdx >= sorted.length) return;
+
+  const currentCol = sorted[currentIdx];
+  const swapCol = sorted[newIdx];
+
+  const tempOrder = currentCol.order;
+  currentCol.order = swapCol.order;
+  swapCol.order = tempOrder;
 
   saveManifestSessionToStorageV3(manifestSession);
   renderOutputColumnsConfig();
@@ -5774,6 +5830,324 @@ function runPhase4Tests() {
   } catch (e) {
     results['source metadata'] = false;
     console.log(`✗ Source metadata error: ${e.message}\n`);
+  }
+
+  // DEFECT 1: Manifest description should use normalized.title, not normalized.description
+  try {
+    const testSession = { rows: [{ normalized: { upc: '100', title: 'Manifest Title Only', expectedQty: 10 } }], allocationRecords: [] };
+    const group = {
+      upc: '100',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 1: manifest title source'] = row.manifestDescription === 'Manifest Title Only';
+    console.log(`${results['DEFECT 1: manifest title source'] ? '✓' : '✗'} DEFECT 1 manifest title: ${row.manifestDescription}\n`);
+  } catch (e) {
+    results['DEFECT 1: manifest title source'] = false;
+    console.log(`✗ DEFECT 1 error: ${e.message}\n`);
+  }
+
+  // DEFECT 2: SKU should preserve manifestSku field for reference
+  try {
+    const testSession = { rows: [{ normalized: { upc: '101', sku: 'MANF-SKU', expectedQty: 10 } }], allocationRecords: [] };
+    const group = {
+      upc: '101',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 2: manifestSku preserved'] = row.manifestSku === 'MANF-SKU' && row.sku === 'MANF-SKU';
+    console.log(`${results['DEFECT 2: manifestSku preserved'] ? '✓' : '✗'} DEFECT 2 manifestSku: ${row.manifestSku}\n`);
+  } catch (e) {
+    results['DEFECT 2: manifestSku preserved'] = false;
+    console.log(`✗ DEFECT 2 error: ${e.message}\n`);
+  }
+
+  // DEFECT 3: Duplicate UPC quantities should sum across all matching rows
+  try {
+    const testSession = {
+      rows: [
+        { rowId: 0, normalized: { upc: '102', expectedQty: 15 } },
+        { rowId: 1, normalized: { upc: '102', expectedQty: 25 } }
+      ],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '102',
+      totalQuantity: 10,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 3: duplicate UPC sum'] = row.manifestQty === 40;
+    console.log(`${results['DEFECT 3: duplicate UPC sum'] ? '✓' : '✗'} DEFECT 3 duplicate UPC: ${row.manifestQty} (expected 40)\n`);
+  } catch (e) {
+    results['DEFECT 3: duplicate UPC sum'] = false;
+    console.log(`✗ DEFECT 3 error: ${e.message}\n`);
+  }
+
+  // DEFECT 4: Extended retail should prefer source value over calculation
+  try {
+    const testSession = {
+      rows: [{ rowId: 0, normalized: { upc: '103', extendedRetail: 500.00, expectedQty: 10, unitRetail: 50 } }],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '103',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 4: extendedRetail source'] = row.manifestExtendedRetail === 500.00;
+    console.log(`${results['DEFECT 4: extendedRetail source'] ? '✓' : '✗'} DEFECT 4 extendedRetail: ${row.manifestExtendedRetail}\n`);
+  } catch (e) {
+    results['DEFECT 4: extendedRetail source'] = false;
+    console.log(`✗ DEFECT 4 error: ${e.message}\n`);
+  }
+
+  // DEFECT 5: Conflicting retail values should use first valid value
+  try {
+    const testSession = {
+      rows: [
+        { rowId: 0, normalized: { upc: '104', unitRetail: 19.99 } },
+        { rowId: 1, normalized: { upc: '104', unitRetail: 29.99 } }
+      ],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '104',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 5: conflicting retail'] = row.manifestRetail === 19.99;
+    console.log(`${results['DEFECT 5: conflicting retail'] ? '✓' : '✗'} DEFECT 5 conflicting retail: ${row.manifestRetail}\n`);
+  } catch (e) {
+    results['DEFECT 5: conflicting retail'] = false;
+    console.log(`✗ DEFECT 5 error: ${e.message}\n`);
+  }
+
+  // DEFECT 6: No timestamp fabrication - should be empty when no records
+  try {
+    const group = {
+      upc: '105',
+      totalQuantity: 3,
+      records: []
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['DEFECT 6: no timestamp fabrication'] = row.timestamp === '';
+    console.log(`${results['DEFECT 6: no timestamp fabrication'] ? '✓' : '✗'} DEFECT 6 no fabrication: '${row.timestamp}'\n`);
+  } catch (e) {
+    results['DEFECT 6: no timestamp fabrication'] = false;
+    console.log(`✗ DEFECT 6 error: ${e.message}\n`);
+  }
+
+  // DEFECT 7: Column reorder should use sorted view order
+  try {
+    const testSession = { outputConfig: undefined, allocationRecords: [] };
+    ensureOutputConfig(testSession);
+    const cols = testSession.outputConfig.columns;
+    const skuIdx = cols.findIndex(c => c.key === 'sku');
+    const upcIdx = cols.findIndex(c => c.key === 'upc');
+    const origSkuOrder = cols[skuIdx].order;
+    const origUpcOrder = cols[upcIdx].order;
+
+    moveOutputColumn('sku', 'down');
+    results['DEFECT 7: column reorder'] = cols[skuIdx].order !== origSkuOrder;
+    console.log(`${results['DEFECT 7: column reorder'] ? '✓' : '✗'} DEFECT 7 column reorder: orders changed\n`);
+  } catch (e) {
+    results['DEFECT 7: column reorder'] = false;
+    console.log(`✗ DEFECT 7 error: ${e.message}\n`);
+  }
+
+  // DEFECT 8: Identification method empty for 0 methods
+  try {
+    const group = {
+      upc: '106',
+      totalQuantity: 2,
+      records: []
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['DEFECT 8: empty identification'] = row.identificationMethod === '';
+    console.log(`${results['DEFECT 8: empty identification'] ? '✓' : '✗'} DEFECT 8 empty ident: '${row.identificationMethod}'\n`);
+  } catch (e) {
+    results['DEFECT 8: empty identification'] = false;
+    console.log(`✗ DEFECT 8 error: ${e.message}\n`);
+  }
+
+  // DEFECT 9: Prefer explicit manifestRowIds over UPC match
+  try {
+    const testSession = {
+      rows: [
+        { rowId: 10, normalized: { upc: '107', title: 'Explicit Row', expectedQty: 20 } },
+        { rowId: 20, normalized: { upc: '107', title: 'Other Row', expectedQty: 30 } }
+      ],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '107',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [1], manifestRowIds: [10], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['DEFECT 9: explicit rowIds preference'] = row.manifestDescription === 'Explicit Row' && row.manifestQty === 20;
+    console.log(`${results['DEFECT 9: explicit rowIds preference'] ? '✓' : '✗'} DEFECT 9 rowIds: ${row.manifestDescription}\n`);
+  } catch (e) {
+    results['DEFECT 9: explicit rowIds preference'] = false;
+    console.log(`✗ DEFECT 9 error: ${e.message}\n`);
+  }
+
+  // DEFECT 10: DataSource detection based on verified fields
+  try {
+    const testSession = { rows: [], allocationRecords: [] };
+    const groupWithEbayOnly = {
+      upc: '108',
+      totalQuantity: 2,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'barcode' }],
+      ebayTitle: 'eBay Only'
+    };
+    const row = buildDestinationOutputRow(groupWithEbayOnly, { manifestSession: testSession });
+    results['DEFECT 10: datasource verified'] = row.dataSource === 'EBAY';
+    console.log(`${results['DEFECT 10: datasource verified'] ? '✓' : '✗'} DEFECT 10 datasource: ${row.dataSource}\n`);
+  } catch (e) {
+    results['DEFECT 10: datasource verified'] = false;
+    console.log(`✗ DEFECT 10 error: ${e.message}\n`);
+  }
+
+  // Additional regression tests for edge cases
+
+  // No-manifest mode: all fields work without manifest
+  try {
+    const group = {
+      upc: '200',
+      sku: 'MANUAL-SKU',
+      title: 'Manual Entry',
+      totalQuantity: 5,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'manual' }],
+      unitRetail: 9.99
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['no-manifest mode'] = row.sku === 'MANUAL-SKU' && row.description === 'Manual Entry' && row.retail === 9.99;
+    console.log(`${results['no-manifest mode'] ? '✓' : '✗'} No-manifest mode: works\n`);
+  } catch (e) {
+    results['no-manifest mode'] = false;
+    console.log(`✗ No-manifest mode error: ${e.message}\n`);
+  }
+
+  // Mixed identification methods
+  try {
+    const testSession = { rows: [], allocationRecords: [] };
+    const group = {
+      upc: '201',
+      totalQuantity: 5,
+      records: [
+        { sourceRowNumbers: [1], identificationMethod: 'barcode' },
+        { sourceRowNumbers: [2], identificationMethod: 'manual' }
+      ]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['mixed ident methods'] = row.identificationMethod === 'mixed' && row.identificationMethods.length === 2;
+    console.log(`${results['mixed ident methods'] ? '✓' : '✗'} Mixed ident methods: ${row.identificationMethod}\n`);
+  } catch (e) {
+    results['mixed ident methods'] = false;
+    console.log(`✗ Mixed ident methods error: ${e.message}\n`);
+  }
+
+  // Aggregated source rows from multiple records
+  try {
+    const group = {
+      upc: '202',
+      totalQuantity: 8,
+      records: [
+        { sourceRowNumbers: [1, 2], identificationMethod: 'barcode' },
+        { sourceRowNumbers: [3, 4], identificationMethod: 'barcode' }
+      ]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    const expectedRows = [1, 2, 3, 4].sort((a, b) => a - b);
+    const actualRows = row.sourceRowNumbers.sort((a, b) => a - b);
+    results['aggregated source rows'] = JSON.stringify(actualRows) === JSON.stringify(expectedRows);
+    console.log(`${results['aggregated source rows'] ? '✓' : '✗'} Aggregated source rows: ${JSON.stringify(row.sourceRowNumbers)}\n`);
+  } catch (e) {
+    results['aggregated source rows'] = false;
+    console.log(`✗ Aggregated source rows error: ${e.message}\n`);
+  }
+
+  // Multiple manifest rows with different data
+  try {
+    const testSession = {
+      rows: [
+        { rowId: 0, normalized: { upc: '203', sku: 'SKU1', title: 'Title1', expectedQty: 10 } },
+        { rowId: 1, normalized: { upc: '203', sku: 'SKU1', title: 'Title1', expectedQty: 15 } }
+      ],
+      allocationRecords: []
+    };
+    const group = {
+      upc: '203',
+      totalQuantity: 8,
+      records: [{ sourceRowNumbers: [1], identificationMethod: 'barcode' }]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: testSession });
+    results['multi-row qty sum'] = row.manifestQty === 25;
+    console.log(`${results['multi-row qty sum'] ? '✓' : '✗'} Multi-row qty sum: ${row.manifestQty}\n`);
+  } catch (e) {
+    results['multi-row qty sum'] = false;
+    console.log(`✗ Multi-row qty sum error: ${e.message}\n`);
+  }
+
+  // Timestamp with createdAt/updatedAt
+  try {
+    const group = {
+      upc: '204',
+      totalQuantity: 3,
+      records: [
+        { sourceRowNumbers: [1], timestamp: '2025-01-01T10:00:00Z', identificationMethod: 'barcode' },
+        { sourceRowNumbers: [2], timestamp: '2025-01-01T11:00:00Z', identificationMethod: 'barcode' }
+      ]
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['timestamp earliest-latest'] = row.createdAt === '2025-01-01T10:00:00Z' && row.updatedAt === '2025-01-01T11:00:00Z';
+    console.log(`${results['timestamp earliest-latest'] ? '✓' : '✗'} Timestamp earliest-latest: ${row.createdAt} to ${row.updatedAt}\n`);
+  } catch (e) {
+    results['timestamp earliest-latest'] = false;
+    console.log(`✗ Timestamp error: ${e.message}\n`);
+  }
+
+  // Column move up and down
+  try {
+    const testSession = { outputConfig: undefined, allocationRecords: [] };
+    ensureOutputConfig(testSession);
+    const cols = testSession.outputConfig.columns;
+    const skuCol = cols.find(c => c.key === 'sku');
+    const upcCol = cols.find(c => c.key === 'upc');
+    const skuOrigOrder = skuCol.order;
+    const upcOrigOrder = upcCol.order;
+
+    moveOutputColumn('sku', 'down');
+    const skuNewOrder = skuCol.order;
+    const upcNewOrder = upcCol.order;
+
+    results['column move down'] = skuNewOrder > skuOrigOrder && upcNewOrder < upcOrigOrder;
+    console.log(`${results['column move down'] ? '✓' : '✗'} Column move down: orders swapped\n`);
+  } catch (e) {
+    results['column move down'] = false;
+    console.log(`✗ Column move error: ${e.message}\n`);
+  }
+
+  // Extended retail calc fallback
+  try {
+    const group = {
+      upc: '205',
+      totalQuantity: 4,
+      records: [{ sourceRowNumbers: [], identificationMethod: 'manual' }],
+      unitRetail: 25.00
+    };
+    const row = buildDestinationOutputRow(group, { manifestSession: { rows: [], allocationRecords: [] } });
+    results['extended retail fallback'] = row.extendedRetail === 100.00;
+    console.log(`${results['extended retail fallback'] ? '✓' : '✗'} Extended retail fallback: ${row.extendedRetail}\n`);
+  } catch (e) {
+    results['extended retail fallback'] = false;
+    console.log(`✗ Extended retail fallback error: ${e.message}\n`);
   }
 
   // Summary
