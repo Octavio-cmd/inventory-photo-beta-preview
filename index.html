@@ -218,9 +218,31 @@
     .manifest-session-btn .replace{background:var(--sf2);color:var(--mu);border:1px solid var(--bd)}
     .manifest-session-btn .clear{background:rgba(255,23,68,.2);color:var(--dw)}
 
+    /* PHASE 0: Truck / Load entry */
+    .home-section-title{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;font-weight:800;margin:4px 0 6px}
+    .load-question{font-size:18px;font-weight:800;margin-bottom:14px}
+    .load-choice{display:block;width:100%;text-align:left;background:var(--sf);border:2px solid var(--ac);border-radius:16px;padding:18px;margin-bottom:12px;color:var(--tx);cursor:pointer;font-family:inherit}
+    .load-choice.no{border-color:var(--gd)}
+    .load-choice .t{font-size:17px;font-weight:800}
+    .load-choice .s{font-size:12px;color:var(--mu);margin-top:4px}
+    .resume-card{background:var(--sf);border-left:4px solid var(--sv);border-radius:12px;padding:16px;margin:4px 0 16px}
+    .resume-card .name{font-size:16px;font-weight:800;margin:4px 0;word-break:break-word}
+    .resume-card .meta{font-size:12px;color:var(--mu)}
+    .quick-lookup-divider{border-top:1px solid var(--bd);margin:20px 0 14px}
+    .load-header{background:var(--sf);border-radius:12px;padding:14px 16px;margin-bottom:14px;border-left:4px solid var(--ac)}
+    .load-header .lbl{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+    .load-header .name{font-size:18px;font-weight:800;margin:2px 0 4px;word-break:break-word}
+    .load-header .meta{font-size:12px;color:var(--mu)}
+    .form-field{margin-bottom:14px}
+    .form-field label{display:block;font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+    .form-field input,.form-field textarea{width:100%;padding:12px;background:var(--sf2);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:16px;box-sizing:border-box;font-family:inherit}
+    #save-error-banner{display:none;position:sticky;top:0;z-index:50;background:var(--dw);color:#fff;font-size:13px;font-weight:800;padding:10px 14px;text-align:center}
+
   </style>
 </head>
 <body>
+
+<div id="save-error-banner" role="alert">⚠️ NOT SAVED on this device — storage is full or unavailable. Do not close this page.</div>
 
 <div class="hdr">
   <div class="hdr-logo" onclick="goHome()" ontouchend="event.preventDefault();goHome()" style="cursor:pointer">
@@ -269,12 +291,29 @@
 
 <!-- HOME SCREEN -->
 <div class="scr on" id="scr-home">
-  <div style="padding:8px 0 16px">
-    <div style="font-size:22px;font-weight:800">Inventory Manager</div>
-    <div style="font-size:13px;color:var(--mu);margin-top:4px">Search by UPC or SKU in Sellbrite</div>
+  <!-- PHASE 0: PROCESS A TRUCK / LOAD -->
+  <div id="home-load-section" style="padding:8px 0 4px">
+    <div class="home-section-title">Process a Truck / Load</div>
+    <div class="load-question">Does this truck/load have a manifest?</div>
+    <button class="load-choice" id="home-load-yes" onclick="startLoadWithManifest()" ontouchend="event.preventDefault();startLoadWithManifest()">
+      <div class="t">📁 YES — UPLOAD MANIFEST</div>
+      <div class="s">CSV · Excel</div>
+    </button>
+    <button class="load-choice no" id="home-load-no" onclick="startLoadWithoutManifest()" ontouchend="event.preventDefault();startLoadWithoutManifest()">
+      <div class="t">✏️ NO — CREATE NEW MANIFEST</div>
+      <div class="s">Build it as you scan</div>
+    </button>
   </div>
 
-  <div class="scan-card" onclick="openScanner()" ontouchend="event.preventDefault();openScanner()">
+  <!-- PHASE 0: RESUME LOAD (rendered by renderManifestSessionIndicator) -->
+  <div id="manifest-session-indicator"></div>
+
+  <!-- QUICK LOOKUP (Inventory) — existing tools, unchanged behavior -->
+  <div class="quick-lookup-divider"></div>
+  <div class="home-section-title">Quick Lookup (Inventory)</div>
+  <div style="font-size:13px;color:var(--mu);margin-bottom:12px">Search by UPC or SKU in Sellbrite</div>
+
+  <div class="scan-card" onclick="openScanner('lookup')" ontouchend="event.preventDefault();openScanner('lookup')">
     <div class="icon">📷</div>
     <h2>Scan Barcode</h2>
     <p>Point camera at UPC barcode</p>
@@ -285,14 +324,6 @@
     <h2>Identify by Photo<span class="beta-tag">BETA</span></h2>
     <p>Take or upload a photo to find a possible match</p>
   </div>
-
-  <div class="manifest-card" onclick="openReceiving()" ontouchend="event.preventDefault();openReceiving()">
-    <div class="icon">📦</div>
-    <h2>Receiving<span class="beta-tag">BETA</span></h2>
-    <p>Receive inventory with optional manifest</p>
-  </div>
-
-  <div id="manifest-session-indicator"></div>
 
   <div style="font-size:12px;color:var(--mu);text-align:center;margin:12px 0">— or type manually —</div>
 
@@ -562,7 +593,14 @@ function goHome(){
 // ── RAILWAY CONFIG (no credentials needed in browser) ───────
 
 // ── SCANNER ──────────────────────────────────────────────────
-function openScanner(){
+// PHASE 0: Who opened the scanner. 'lookup' = Home Quick Lookup (always a
+// plain inventory lookup, even while a load is active); 'receiving' = the
+// active load's Workspace. Omitted = legacy callers, which keep their
+// original routing (receivingActive / manifest status) unchanged.
+let scannerContext = null;
+
+function openScanner(context){
+  scannerContext = context || null;
   showScreen('scr-scan');
   if(scanner) return;
   scanner = new Html5Qrcode('reader');
@@ -571,8 +609,11 @@ function openScanner(){
     {fps:15, qrbox:{width:280,height:100}},
     (decodedText) => {
       stopScanner();
+      // PHASE 0: Quick Lookup never routes into the active load
+      if (scannerContext === 'lookup') {
+        searchUPC(decodedText.trim());
       // PHASE 5A: Route to unified receiving if active, else old flow
-      if (manifestSession && manifestSession.receivingActive) {
+      } else if (manifestSession && manifestSession.receivingActive) {
         identifyReceivingByUpc(decodedText.trim(), 'barcode');
       } else if (manifestSession && manifestSession.status === 'ready') {
         searchReceivingProduct(decodedText.trim(), 'barcode');
@@ -598,8 +639,11 @@ function searchFromScan(){
   if(!v){ toast('⚠️ Enter a UPC'); return; }
   stopScanner();
 
+  // PHASE 0: Quick Lookup never routes into the active load
+  if (scannerContext === 'lookup') {
+    searchUPC(v);
   // PHASE 5A DEFECT 1 FIX: If in unified receiving, use unified enrichment flow
-  if (manifestSession && manifestSession.receivingActive) {
+  } else if (manifestSession && manifestSession.receivingActive) {
     identifyReceivingByUpc(v, 'barcode');
   } else if (manifestSession && manifestSession.status === 'ready') {
     searchReceivingProduct(v, 'barcode');
@@ -612,20 +656,11 @@ function searchManual(){
   const v = $('manualUpc').value.trim();
   if(!v){ toast('⚠️ Enter a UPC or SKU'); return; }
 
-  // PHASE 5A: If in unified receiving, route to Entry screen
-  if (manifestSession && manifestSession.receivingActive) {
-    receivingState.identificationMethod = 'upc-sku';
-    $('upc-sku-entry-input').value = v;
-    submitUpcSkuEntry();
-    return;
-  }
-
-  // PHASE 2: If manifest is active, use manifest-first search
-  if (manifestSession && manifestSession.status === 'ready') {
-    searchReceivingProduct(v, 'manual_upc');
-  } else {
-    searchUPC(v);
-  }
+  // PHASE 0: This input is the Home "Quick Lookup (Inventory)" box — it is
+  // always a plain inventory lookup. Entering a code INTO the active load
+  // happens from the Workspace ("Enter UPC / SKU"). Previously, with a load
+  // active, this wrote to an input that is not on Home and threw.
+  searchUPC(v);
 }
 
 // ── PHASE 1: ONLINE IDENTIFICATION FIRST, THEN SELLBRITE STATUS ──────────
@@ -2499,23 +2534,192 @@ function clearActiveManifestSession() {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// PHASE 0: TRUCK / LOAD ENTRY
+// Additive layer over the existing v3 receiving session. No schema change:
+// a load is the existing manifestSession plus optional `name`, `meta` and
+// `createdAt`. Older v3/v2 sessions without these fields still load and
+// fall back to their file name, then "Untitled Load".
+// This layer is READ-ONLY with respect to Sellbrite/ShipStation — it never
+// calls any inventory/listing write endpoint.
+// ═════════════════════════════════════════════════════════════════════════
+
+const UNTITLED_LOAD_NAME = 'Untitled Load';
+
+// Display name for any session, including legacy sessions without `name`.
+function getLoadDisplayName(session) {
+  if (!session) return UNTITLED_LOAD_NAME;
+  const name = String(session.name || '').trim();
+  if (name) return name;
+  const fileName = String(session.fileName || '').trim();
+  if (fileName) return fileName;
+  return UNTITLED_LOAD_NAME;
+}
+
+// Default load name for an imported manifest: file name without extension.
+function deriveDefaultLoadName(fileName) {
+  const base = String(fileName || '').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '').trim();
+  return base || UNTITLED_LOAD_NAME;
+}
+
+function getLoadMeta(session) {
+  const meta = (session && session.meta && typeof session.meta === 'object') ? session.meta : {};
+  return {
+    vendor: String(meta.vendor || ''),
+    loadId: String(meta.loadId || ''),
+    notes: String(meta.notes || '')
+  };
+}
+
+// True when there is a load/session that a new load would replace.
+function hasReplaceableLoad(session) {
+  if (!session) return false;
+  return session.receivingActive === true ||
+         session.status === 'ready' ||
+         session.status === 'mapping';
+}
+
+// Asks before anything could replace the active load. Returns true when it
+// is safe to continue (no active load, or the employee confirmed).
+function confirmReplaceActiveLoad() {
+  if (!hasReplaceableLoad(manifestSession)) return true;
+  return confirm('⚠️ A load is already in progress: "' + getLoadDisplayName(manifestSession) + '".\n\n' +
+    'Starting a new load will replace it on this device once the new load is created. ' +
+    'Its allocations will no longer be shown.\n\nStart a new load anyway?');
+}
+
+// Home → YES — UPLOAD MANIFEST → existing import flow (unchanged).
+function startLoadWithManifest() {
+  if (!confirmReplaceActiveLoad()) return false;
+  const fileInput = $('manifest-file-input');
+  if (fileInput) fileInput.value = '';
+  showScreen('scr-manifest-upload');
+  return true;
+}
+
+// Home → NO — CREATE NEW MANIFEST → name/meta form.
+function startLoadWithoutManifest() {
+  if (!confirmReplaceActiveLoad()) return false;
+  ['new-manifest-name', 'new-manifest-vendor', 'new-manifest-loadid', 'new-manifest-notes'].forEach(id => {
+    const el = $(id);
+    if (el) el.value = '';
+  });
+  const msg = $('new-manifest-msg');
+  if (msg) msg.textContent = '';
+  showScreen('scr-new-manifest');
+  const nameEl = $('new-manifest-name');
+  if (nameEl) setTimeout(() => nameEl.focus(), 50);
+  return true;
+}
+
+// Submit of the NO path form. Manifest Name is required; the rest optional.
+// The date is generated automatically (createdAt/uploadedAt).
+function submitNewManifest() {
+  const name = String(($('new-manifest-name') || {}).value || '').trim();
+  const msg = $('new-manifest-msg');
+  if (!name) {
+    if (msg) msg.textContent = '⚠️ Manifest Name is required';
+    return false;
+  }
+  if (msg) msg.textContent = '';
+
+  const saved = startReceivingWithoutManifest({
+    name: name,
+    meta: {
+      vendor: String(($('new-manifest-vendor') || {}).value || '').trim(),
+      loadId: String(($('new-manifest-loadid') || {}).value || '').trim(),
+      notes: String(($('new-manifest-notes') || {}).value || '').trim()
+    }
+  });
+
+  renderManifestSessionIndicator();
+  if (saved) {
+    toast('✅ Load created: ' + name);
+  } else {
+    toast('⚠️ Load created but NOT saved on this device', 4000);
+  }
+  return true;
+}
+
+// Workspace "← Home": returns to Home WITHOUT touching the active load.
+function goHomeFromLoad() {
+  stopScanner();
+  renderManifestSessionIndicator();
+  showScreen('scr-home');
+}
+
+// RESUME LOAD from Home.
+function resumeActiveLoad() {
+  if (!manifestSession) return;
+  if (manifestSession.receivingActive) {
+    resumeReceiving();
+  } else {
+    // Legacy (pre-5A) sessions keep their original Resume behavior.
+    openManifestSummary();
+  }
+}
+
+// Editable load name from the Workspace header.
+function editLoadName() {
+  if (!manifestSession) return;
+  const current = getLoadDisplayName(manifestSession);
+  const input = prompt('Manifest / Load name:', current);
+  if (input === null) return;
+  const name = String(input).trim();
+  if (!name) {
+    toast('⚠️ Manifest Name cannot be empty');
+    return;
+  }
+  manifestSession.name = name;
+  const saved = saveManifestSessionToStorageV3(manifestSession);
+  toast(saved ? '✅ Name updated' : '⚠️ Name changed but NOT saved on this device', saved ? 2600 : 4000);
+  renderReceivingWorkspace();
+  renderManifestSessionIndicator();
+}
+
+// Renders the load name/meta header shown at the top of the Workspace.
+function renderLoadHeaderHtml(session) {
+  const meta = getLoadMeta(session);
+  let html = '<div class="load-header" id="load-header">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">';
+  html += '<div style="flex:1;min-width:0">';
+  html += '<div class="lbl">Manifest / Load</div>';
+  html += '<div class="name" id="load-header-name">' + escapeHtml(getLoadDisplayName(session)) + '</div>';
+  if (meta.vendor) html += '<div class="meta">Vendor / Source: ' + escapeHtml(meta.vendor) + '</div>';
+  if (meta.loadId) html += '<div class="meta">Load / Truck ID: ' + escapeHtml(meta.loadId) + '</div>';
+  html += '</div>';
+  html += '<button class="btn sec" style="width:auto;margin-bottom:0;padding:8px 12px;font-size:12px" onclick="editLoadName()" ontouchend="event.preventDefault();editLoadName()">✏️ Edit</button>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+// Home "RESUME LOAD" card (replaces the old Active Manifest indicator).
 function renderManifestSessionIndicator(){
   const el = $('manifest-session-indicator');
   if(!el) return;
 
-  if(manifestSession && (manifestSession.status === 'ready' || manifestSession.status === 'mapping')){
-    el.innerHTML = `
-      <div class="manifest-session-indicator">
-        <div class="manifest-session-label">📋 Active Manifest</div>
-        <div class="manifest-session-file">${escapeHtml(manifestSession.fileName)}</div>
-        <div class="manifest-session-count">${manifestSession.rows.length} rows</div>
-        <div class="manifest-session-btn">
-          <button class="resume" onclick="openManifestSummary()" ontouchend="event.preventDefault();openManifestSummary()">Resume</button>
-          <button class="replace" onclick="confirmReplaceManifest()" ontouchend="event.preventDefault();confirmReplaceManifest()">Replace</button>
-          <button class="clear" onclick="confirmClearManifest()" ontouchend="event.preventDefault();confirmClearManifest()">Clear</button>
-        </div>
-      </div>
-    `;
+  if(manifestSession && (manifestSession.receivingActive === true || manifestSession.status === 'ready' || manifestSession.status === 'mapping')){
+    const meta = getLoadMeta(manifestSession);
+    const records = Array.isArray(manifestSession.allocationRecords) ? manifestSession.allocationRecords : [];
+    const rows = Array.isArray(manifestSession.rows) ? manifestSession.rows : [];
+    const units = records.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
+    const products = new Set(records.map(r => r.productKey || calculateProductKey(r.upc, r.sku, r.productId) || r.id)).size;
+
+    const progress = [];
+    if (manifestSession.isManifestLoaded || rows.length > 0) progress.push(rows.length + ' manifest row' + (rows.length === 1 ? '' : 's'));
+    progress.push(products + ' product' + (products === 1 ? '' : 's') + ' allocated');
+    progress.push(units + ' unit' + (units === 1 ? '' : 's'));
+
+    let html = '<div class="resume-card" id="resume-load-card">';
+    html += '<div class="home-section-title" style="margin:0">▶ Resume Load</div>';
+    html += '<div class="name">' + escapeHtml(getLoadDisplayName(manifestSession)) + '</div>';
+    if (meta.vendor) html += '<div class="meta">Vendor / Source: ' + escapeHtml(meta.vendor) + '</div>';
+    if (meta.loadId) html += '<div class="meta">Load / Truck ID: ' + escapeHtml(meta.loadId) + '</div>';
+    html += '<div class="meta" style="margin-top:4px">' + escapeHtml(progress.join(' · ')) + '</div>';
+    html += '<button class="btn grn" style="margin:12px 0 0" id="resume-load-btn" onclick="resumeActiveLoad()" ontouchend="event.preventDefault();resumeActiveLoad()">▶️ RESUME</button>';
+    html += '</div>';
+    el.innerHTML = html;
   } else {
     el.innerHTML = '';
   }
@@ -2607,15 +2811,26 @@ function startReceivingWithManifest(){
   showScreen('scr-manifest-upload');
 }
 
-function startReceivingWithoutManifest(){
+function startReceivingWithoutManifest(loadInfo){
+  // PHASE 0: optional load name/meta (additive to v3; date is automatic)
+  const info = loadInfo || {};
+  const infoMeta = info.meta || {};
+  const nowIso = new Date().toISOString();
   // Create no-manifest session
   manifestSession = {
     version: 3,
     id: generateSessionId(),
+    name: String(info.name || '').trim(),
+    meta: {
+      vendor: String(infoMeta.vendor || '').trim(),
+      loadId: String(infoMeta.loadId || '').trim(),
+      notes: String(infoMeta.notes || '').trim()
+    },
+    createdAt: nowIso,
     fileName: '',
     fileType: '',
     sheetName: null,
-    uploadedAt: new Date().toISOString(),
+    uploadedAt: nowIso,
     headerRowIndex: -1,
     sourceHeaderRowNumber: 0,
     rawHeaders: [],
@@ -2631,9 +2846,10 @@ function startReceivingWithoutManifest(){
   };
 
   ensureOutputConfig(manifestSession);
-  saveManifestSessionToStorageV3(manifestSession);
+  const saved = saveManifestSessionToStorageV3(manifestSession);
   renderReceivingWorkspace();
   showScreen('scr-receiving-workspace');
+  return saved;
 }
 
 function renderStartReceiving(){
@@ -3168,9 +3384,23 @@ function proceedToHeaderDetectionFromImport(importResult, section) {
 function saveManifestSessionToStorageV3(manifestSession) {
   try {
     localStorage.setItem(MANIFEST_SESSION_V3_KEY, JSON.stringify(manifestSession));
+    setSaveErrorBanner(false);
+    return true;
   } catch (e) {
     console.warn('Failed to save to localStorage v3:', e);
+    // PHASE 0: never pretend a failed save succeeded
+    setSaveErrorBanner(true);
+    return false;
   }
+}
+
+// PHASE 0: Visible, persistent warning when the active load could not be
+// written to this device's storage. Cleared on the next successful save.
+function setSaveErrorBanner(show) {
+  try {
+    const el = document.getElementById('save-error-banner');
+    if (el) el.style.display = show ? 'block' : 'none';
+  } catch (e) { /* banner must never break saving */ }
 }
 
 function loadManifestSessionFromStorageV3() {
@@ -3404,6 +3634,18 @@ function submitManifestMapping() {
   // PHASE 5A: Set flags for unified receiving
   manifestSession.isManifestLoaded = true;
   manifestSession.receivingActive = true;
+
+  // PHASE 0: default load name from the uploaded file (editable later from
+  // the Workspace header); meta/createdAt additive, never overwritten.
+  if (!String(manifestSession.name || '').trim()) {
+    manifestSession.name = deriveDefaultLoadName(manifestSession.fileName);
+  }
+  if (!manifestSession.meta || typeof manifestSession.meta !== 'object') {
+    manifestSession.meta = { vendor: '', loadId: '', notes: '' };
+  }
+  if (!manifestSession.createdAt) {
+    manifestSession.createdAt = manifestSession.uploadedAt || new Date().toISOString();
+  }
 
   // ISSUE 6: For Universal Importer v3, save ONLY to v3 key (not v2)
   if (manifestSession.version === 3) {
@@ -6425,12 +6667,14 @@ function renderReceivingWorkspace() {
   if (!container) return;
 
   const manifestStatus = manifestSession.isManifestLoaded ?
-    `📋 Manifest: ${manifestSession.fileName || 'loaded'} (${manifestSession.rows.length} rows)` :
+    `📋 Manifest: ${escapeHtml(manifestSession.fileName || 'loaded')} (${manifestSession.rows.length} rows)` :
     '📦 No Manifest';
 
   const summary = getManifestAllocationSummary(manifestSession);
 
-  let html = '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
+  // PHASE 0: load name / vendor / truck ID header
+  let html = renderLoadHeaderHtml(manifestSession);
+  html += '<div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px">';
   html += '<div style="text-align:center">';
   html += '<div style="font-size:48px;margin-bottom:12px">📦</div>';
   html += '<h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Receiving Workspace</h2>';
@@ -6482,7 +6726,9 @@ function startIdentificationMethod(method) {
   receivingState.identificationMethod = method;
 
   if (method === 'barcode') {
-    showScreen('scr-scan');
+    // PHASE 0 FIX: actually start the camera (reuses the one scanner
+    // implementation); 'receiving' keeps the scan inside the active load.
+    openScanner('receiving');
   } else if (method === 'photo') {
     showScreen('scr-photo-capture');
   } else if (method === 'upc-sku') {
@@ -6501,13 +6747,18 @@ function renderUpcSkuEntry() {
   let html = '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">UPC or SKU</label>';
   html += '<input id="upc-sku-entry-input" type="text" placeholder="Enter UPC or SKU..." ';
-  html += 'style="width:100%;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)" ';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)" ';
   html += 'onkeydown="if(event.key===\'Enter\') submitUpcSkuEntry()">';
   html += '</div>';
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
   html += '<button class="btn grn" onclick="submitUpcSkuEntry()" ontouchend="event.preventDefault();submitUpcSkuEntry()" style="margin-bottom:0">✓ Continue</button>';
   html += '<button class="btn sec" onclick="showScreen(\'scr-receiving-workspace\')" ontouchend="event.preventDefault();showScreen(\'scr-receiving-workspace\')" style="margin-bottom:0">← Back</button>';
   html += '</div>';
+
+  // PHASE 0 FIX: the form was built but never inserted into the page
+  container.innerHTML = html;
+  const input = $('upc-sku-entry-input');
+  if (input) setTimeout(() => input.focus(), 50);
 }
 
 function submitUpcSkuEntry() {
@@ -6600,43 +6851,46 @@ function renderManualProductEntry() {
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">SKU (optional)</label>';
   html += '<input id="manual-sku-input" type="text" placeholder="Leave blank if not available..." ';
-  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">UPC (optional)</label>';
   html += '<input id="manual-upc-input" type="text" placeholder="Leave blank if not available..." ';
-  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Description *</label>';
   html += '<input id="manual-desc-input" type="text" placeholder="Required" ';
-  html += 'style="width:100%;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:2px solid var(--ac);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Quantity</label>';
   html += '<input id="manual-qty-input" type="number" value="1" min="1" ';
-  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Retail Price (optional)</label>';
   html += '<input id="manual-retail-input" type="number" step="0.01" placeholder="0.00" ';
-  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="margin-bottom:16px">';
   html += '<label style="font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">ROPA (optional)</label>';
   html += '<input id="manual-ropa-input" type="text" placeholder="e.g., ROPA-001" ';
-  html += 'style="width:100%;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
+  html += 'style="width:100%;box-sizing:border-box;padding:12px;border:1px solid var(--bd);border-radius:8px;font-size:16px;background:var(--sf2);color:var(--tx)">';
   html += '</div>';
 
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px">';
   html += '<button class="btn grn" onclick="submitManualProductEntry()" ontouchend="event.preventDefault();submitManualProductEntry()" style="margin-bottom:0">✓ Review</button>';
   html += '<button class="btn sec" onclick="showScreen(\'scr-receiving-workspace\')" ontouchend="event.preventDefault();showScreen(\'scr-receiving-workspace\')" style="margin-bottom:0">← Back</button>';
   html += '</div>';
+
+  // PHASE 0 FIX: the form was built but never inserted into the page
+  container.innerHTML = html;
 }
 
 function submitManualProductEntry() {
@@ -6916,7 +7170,8 @@ function backToReceivingWorkspace() {
 
 function backFromReceivingScanner() {
   stopScanner();
-  if (manifestSession?.receivingActive) {
+  // PHASE 0: a Quick Lookup scan always goes back to Home
+  if (scannerContext !== 'lookup' && manifestSession?.receivingActive) {
     renderReceivingWorkspace();
     showScreen('scr-receiving-workspace');
   } else {
@@ -8801,6 +9056,34 @@ window.runPhase5ATests = runPhase5ATests;
   <div id="output-preview-content"></div>
 </div>
 
+<!-- PHASE 0: NEW MANIFEST (NO — CREATE NEW MANIFEST) SCREEN -->
+<div class="scr" id="scr-new-manifest">
+  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
+  <div style="margin-bottom:16px">
+    <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Create New Manifest</h2>
+    <p style="font-size:13px;color:var(--mu)">Name this truck / load. Today's date is recorded automatically.</p>
+  </div>
+  <div class="form-field">
+    <label for="new-manifest-name">Manifest Name *</label>
+    <input type="text" id="new-manifest-name" maxlength="120" placeholder="e.g. Target GM Truck - 10/05/2026" autocomplete="off" onkeydown="if(event.key==='Enter') submitNewManifest()">
+  </div>
+  <div class="form-field">
+    <label for="new-manifest-vendor">Vendor / Source (optional)</label>
+    <input type="text" id="new-manifest-vendor" maxlength="120" autocomplete="off">
+  </div>
+  <div class="form-field">
+    <label for="new-manifest-loadid">Load / Truck ID (optional)</label>
+    <input type="text" id="new-manifest-loadid" maxlength="60" autocomplete="off">
+  </div>
+  <div class="form-field">
+    <label for="new-manifest-notes">Notes (optional)</label>
+    <textarea id="new-manifest-notes" rows="3" maxlength="1000"></textarea>
+  </div>
+  <div id="new-manifest-msg" style="font-size:13px;color:var(--dw);text-align:center;min-height:16px;margin-bottom:12px"></div>
+  <button class="btn grn" id="new-manifest-submit" onclick="submitNewManifest()" ontouchend="event.preventDefault();submitNewManifest()">✅ Create Manifest</button>
+  <button class="btn sec" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">Cancel</button>
+</div>
+
 <!-- PHASE 5A: START RECEIVING SCREEN -->
 <div class="scr" id="scr-start-receiving">
   <div style="background:var(--sf);border-radius:16px;padding:20px;margin-bottom:20px;text-align:center">
@@ -8809,9 +9092,9 @@ window.runPhase5ATests = runPhase5ATests;
     <p style="font-size:13px;color:var(--mu)">Create new receiving session</p>
   </div>
 
-  <button class="btn" style="margin-bottom:12px;background:var(--ac)" onclick="startReceivingWithManifest()" ontouchend="event.preventDefault();startReceivingWithManifest()">📁 Upload Manifest</button>
+  <button class="btn" style="margin-bottom:12px;background:var(--ac)" onclick="startLoadWithManifest()" ontouchend="event.preventDefault();startLoadWithManifest()">📁 Upload Manifest</button>
   <p style="font-size:11px;color:var(--mu);text-align:center;margin-bottom:16px">Or skip manifest and enter products manually</p>
-  <button class="btn" style="margin-bottom:12px;background:var(--gd);color:#000" onclick="startReceivingWithoutManifest()" ontouchend="event.preventDefault();startReceivingWithoutManifest()">▶️ Continue Without Manifest</button>
+  <button class="btn" style="margin-bottom:12px;background:var(--gd);color:#000" onclick="startLoadWithoutManifest()" ontouchend="event.preventDefault();startLoadWithoutManifest()">▶️ Continue Without Manifest</button>
 
   <button class="btn sec" style="margin-top:20px" onclick="showScreen('scr-home')" ontouchend="event.preventDefault();showScreen('scr-home')">← Back</button>
 </div>
@@ -8823,7 +9106,7 @@ window.runPhase5ATests = runPhase5ATests;
 
 <!-- PHASE 5A: RECEIVING WORKSPACE SCREEN -->
 <div class="scr" id="scr-receiving-workspace">
-  <button class="btn sec" style="margin-bottom:12px" onclick="showScreen('scr-start-receiving')" ontouchend="event.preventDefault();showScreen('scr-start-receiving')">← New Receiving</button>
+  <button class="btn sec" style="margin-bottom:12px" id="workspace-home-btn" onclick="goHomeFromLoad()" ontouchend="event.preventDefault();goHomeFromLoad()">← Home</button>
   <div id="receiving-workspace-content"></div>
 </div>
 
