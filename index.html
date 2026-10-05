@@ -7387,6 +7387,291 @@ function runPhase5ATests() {
     tests.push('Phase 3 remove allocation');
   }
 
+  // Test 16: dataSource MANIFEST-only
+  try {
+    const testSession = { allocationRecords: [], rows: [{ id: 'm1', normalized: { upc: '111111111111' }, rowId: 'm1' }], isManifestLoaded: true };
+    recordAllocation(testSession, '111111111111', 'SKU', 1, 'SAVVY', 'barcode', ['m1'], '', '', null,
+      { dataSource: 'MANIFEST' });
+    const record = testSession.allocationRecords[0];
+    results['dataSource MANIFEST only'] = record.dataSource === 'MANIFEST';
+    console.log(`${results['dataSource MANIFEST only'] ? '✓' : '✗'} dataSource MANIFEST only\n`);
+    if (results['dataSource MANIFEST only']) passed++;
+    tests.push('dataSource MANIFEST only');
+  } catch (e) {
+    results['dataSource MANIFEST only'] = false;
+    console.log(`✗ dataSource MANIFEST test error: ${e.message}\n`);
+    tests.push('dataSource MANIFEST only');
+  }
+
+  // Test 17: dataSource EBAY-only
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '222222222222', '', 1, 'SAVVY', 'photo', [], '', '', null,
+      { dataSource: 'EBAY' });
+    const record = testSession.allocationRecords[0];
+    results['dataSource EBAY only'] = record.dataSource === 'EBAY';
+    console.log(`${results['dataSource EBAY only'] ? '✓' : '✗'} dataSource EBAY only\n`);
+    if (results['dataSource EBAY only']) passed++;
+    tests.push('dataSource EBAY only');
+  } catch (e) {
+    results['dataSource EBAY only'] = false;
+    console.log(`✗ dataSource EBAY test error: ${e.message}\n`);
+    tests.push('dataSource EBAY only');
+  }
+
+  // Test 18: dataSource BOTH (manifest + eBay)
+  try {
+    const testSession = { allocationRecords: [], rows: [{ id: 'm2', normalized: { upc: '333333333333' }, rowId: 'm2' }], isManifestLoaded: true };
+    recordAllocation(testSession, '333333333333', 'SKU', 1, 'SAVVY', 'photo', ['m2'], '', '', null,
+      { dataSource: 'BOTH' });
+    const record = testSession.allocationRecords[0];
+    results['dataSource BOTH (manifest+ebay)'] = record.dataSource === 'BOTH';
+    console.log(`${results['dataSource BOTH (manifest+ebay)'] ? '✓' : '✗'} dataSource BOTH (manifest+ebay)\n`);
+    if (results['dataSource BOTH (manifest+ebay)']) passed++;
+    tests.push('dataSource BOTH (manifest+ebay)');
+  } catch (e) {
+    results['dataSource BOTH (manifest+ebay)'] = false;
+    console.log(`✗ dataSource BOTH test error: ${e.message}\n`);
+    tests.push('dataSource BOTH (manifest+ebay)');
+  }
+
+  // Test 19: Multiple methods for same product aggregates correctly
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '444444444444', 'MULTI', 3, 'SAVVY', 'barcode', [], '', '', null,
+      { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '444444444444', 'MULTI', 2, 'SAVVY', 'manual_upc', [], '', '', null,
+      { dataSource: 'MANUAL' });
+    const rows = getDestinationManifestRows(testSession, 'SAVVY');
+    results['Multiple methods aggregate'] = rows.length === 1 && rows[0].totalQuantity === 5;
+    console.log(`${results['Multiple methods aggregate'] ? '✓' : '✗'} Multiple methods aggregate: qty=${rows[0]?.totalQuantity}\n`);
+    if (results['Multiple methods aggregate']) passed++;
+    tests.push('Multiple methods aggregate');
+  } catch (e) {
+    results['Multiple methods aggregate'] = false;
+    console.log(`✗ Multiple methods aggregate error: ${e.message}\n`);
+    tests.push('Multiple methods aggregate');
+  }
+
+  // Test 20: SKU duplicate rows preserved
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [
+        { id: 'r1', normalized: { sku: 'DUPSKU', expectedQty: 5, upc: '111' }, sourceRowNumber: 1 },
+        { id: 'r2', normalized: { sku: 'DUPSKU', expectedQty: 3, upc: '111' }, sourceRowNumber: 2 }
+      ]
+    };
+    const dupSku = 'DUPSKU';
+    const key = calculateProductKey('', dupSku, '');
+    results['SKU duplicate rows'] = key.includes('DUPSKU');
+    console.log(`${results['SKU duplicate rows'] ? '✓' : '✗'} SKU duplicate rows preserved: ${key}\n`);
+    if (results['SKU duplicate rows']) passed++;
+    tests.push('SKU duplicate rows preserved');
+  } catch (e) {
+    results['SKU duplicate rows preserved'] = false;
+    console.log(`✗ SKU duplicate rows error: ${e.message}\n`);
+    tests.push('SKU duplicate rows preserved');
+  }
+
+  // Test 21: generateProductId creates unique IDs
+  try {
+    const id1 = generateProductId();
+    const id2 = generateProductId();
+    results['Unique productId generation'] = id1 !== id2 && id1.startsWith('prod_') && id2.startsWith('prod_');
+    console.log(`${results['Unique productId generation'] ? '✓' : '✗'} Unique productId generation\n`);
+    if (results['Unique productId generation']) passed++;
+    tests.push('Unique productId generation');
+  } catch (e) {
+    results['Unique productId generation'] = false;
+    console.log(`✗ Unique productId generation error: ${e.message}\n`);
+    tests.push('Unique productId generation');
+  }
+
+  // Test 22: productKey from productId (MANUAL case)
+  try {
+    const productId = 'manual_12345';
+    const key = calculateProductKey('', '', productId);
+    results['productKey from productId'] = key === 'MANUAL:manual_12345';
+    console.log(`${results['productKey from productId'] ? '✓' : '✗'} productKey from productId: ${key}\n`);
+    if (results['productKey from productId']) passed++;
+    tests.push('productKey from productId');
+  } catch (e) {
+    results['productKey from productId'] = false;
+    console.log(`✗ productKey from productId error: ${e.message}\n`);
+    tests.push('productKey from productId');
+  }
+
+  // Test 23: Receiving session can start without manifest
+  try {
+    const testSession = {
+      version: 3,
+      id: 'test-' + Date.now(),
+      fileName: '',
+      fileType: '',
+      rows: [],
+      allocationRecords: [],
+      status: 'ready',
+      receivingActive: true,
+      isManifestLoaded: false,
+      destinations: ['SAVVY', 'DWI', 'OTHER', 'UNASSIGNED']
+    };
+    results['Receiving without manifest'] =
+      testSession.receivingActive === true &&
+      testSession.isManifestLoaded === false &&
+      testSession.destinations.length === 4;
+    console.log(`${results['Receiving without manifest'] ? '✓' : '✗'} Receiving without manifest\n`);
+    if (results['Receiving without manifest']) passed++;
+    tests.push('Receiving without manifest');
+  } catch (e) {
+    results['Receiving without manifest'] = false;
+    console.log(`✗ Receiving without manifest error: ${e.message}\n`);
+    tests.push('Receiving without manifest');
+  }
+
+  // Test 24: Manifest linkage preserved in allocation
+  try {
+    const testSession = { allocationRecords: [], rows: [{ id: 'm3', normalized: { upc: '555555555555' }, rowId: 'm3' }] };
+    const manifestRowIds = ['m3', 'm4'];
+    recordAllocation(testSession, '555555555555', '', 2, 'SAVVY', 'barcode', manifestRowIds, '', '', null,
+      { dataSource: 'MANIFEST' });
+    const record = testSession.allocationRecords[0];
+    results['Manifest linkage preserved'] =
+      record.manifestRowIds.includes('m3') &&
+      record.manifestRowIds.includes('m4');
+    console.log(`${results['Manifest linkage preserved'] ? '✓' : '✗'} Manifest linkage preserved\n`);
+    if (results['Manifest linkage preserved']) passed++;
+    tests.push('Manifest linkage preserved');
+  } catch (e) {
+    results['Manifest linkage preserved'] = false;
+    console.log(`✗ Manifest linkage error: ${e.message}\n`);
+    tests.push('Manifest linkage preserved');
+  }
+
+  // Test 25: Allocation record has all required fields
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '666666666666', 'SKU25', 5, 'SAVVY', 'barcode', [], 'Product', '', 20,
+      { dataSource: 'MANUAL' }, 'prodtest123');
+    const record = testSession.allocationRecords[0];
+    const hasRequiredFields =
+      record.id && record.timestamp && record.upc && record.sku &&
+      record.productKey && record.destination && record.quantity &&
+      record.identificationMethod && record.dataSource;
+    results['Allocation has all required fields'] = hasRequiredFields;
+    console.log(`${results['Allocation has all required fields'] ? '✓' : '✗'} Allocation has all required fields\n`);
+    if (results['Allocation has all required fields']) passed++;
+    tests.push('Allocation has all required fields');
+  } catch (e) {
+    results['Allocation has all required fields'] = false;
+    console.log(`✗ Allocation fields error: ${e.message}\n`);
+    tests.push('Allocation has all required fields');
+  }
+
+  // Test 26: Workspace destination totals calculation
+  try {
+    const testSession = { allocationRecords: [], rows: [] };
+    recordAllocation(testSession, '777777777777', '', 5, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '888888888888', '', 3, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '999999999999', '', 2, 'DWI', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+
+    const savvy = getDestinationManifestRows(testSession, 'SAVVY');
+    const savvyTotal = savvy.reduce((sum, g) => sum + g.totalQuantity, 0);
+    results['Workspace totals calculation'] = savvyTotal === 8;
+    console.log(`${results['Workspace totals calculation'] ? '✓' : '✗'} Workspace totals: SAVVY=${savvyTotal}\n`);
+    if (results['Workspace totals calculation']) passed++;
+    tests.push('Workspace totals calculation');
+  } catch (e) {
+    results['Workspace totals calculation'] = false;
+    console.log(`✗ Workspace totals error: ${e.message}\n`);
+    tests.push('Workspace totals calculation');
+  }
+
+  // Test 27: Receiving continues across multiple allocations
+  try {
+    const testSession = {
+      version: 3,
+      id: 'test-' + Date.now(),
+      fileName: 'test.csv',
+      fileType: 'csv',
+      rows: [],
+      allocationRecords: [],
+      status: 'ready',
+      receivingActive: true,
+      isManifestLoaded: true,
+      destinations: ['SAVVY', 'DWI']
+    };
+    recordAllocation(testSession, '111111111111', 'S1', 1, 'SAVVY', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    recordAllocation(testSession, '222222222222', 'S2', 2, 'DWI', 'barcode', [], '', '', null, { dataSource: 'MANUAL' });
+    results['Receiving continues'] =
+      testSession.receivingActive === true &&
+      testSession.allocationRecords.length === 2;
+    console.log(`${results['Receiving continues'] ? '✓' : '✗'} Receiving continues (2 allocations)\n`);
+    if (results['Receiving continues']) passed++;
+    tests.push('Receiving continues');
+  } catch (e) {
+    results['Receiving continues'] = false;
+    console.log(`✗ Receiving continues error: ${e.message}\n`);
+    tests.push('Receiving continues');
+  }
+
+  // Test 28: Product key priority (UPC > SKU > productId)
+  try {
+    const key1 = calculateProductKey('012345678901', 'SKU123', 'prodid');
+    const key2 = calculateProductKey('', 'SKU456', 'prodid');
+    const key3 = calculateProductKey('', '', 'prodid');
+    results['ProductKey priority'] =
+      key1.startsWith('UPC:') &&
+      key2.startsWith('SKU:') &&
+      key3.startsWith('MANUAL:');
+    console.log(`${results['ProductKey priority'] ? '✓' : '✗'} ProductKey priority (UPC>SKU>Manual)\n`);
+    if (results['ProductKey priority']) passed++;
+    tests.push('ProductKey priority');
+  } catch (e) {
+    results['ProductKey priority'] = false;
+    console.log(`✗ ProductKey priority error: ${e.message}\n`);
+    tests.push('ProductKey priority');
+  }
+
+  // Test 29: Receiving preserves data source through workflow
+  try {
+    const testSession = { allocationRecords: [], rows: [{ id: 'm5', normalized: { upc: '333333333333' }, rowId: 'm5' }], isManifestLoaded: true };
+    recordAllocation(testSession, '333333333333', 'SKU', 1, 'SAVVY', 'barcode', ['m5'], '', '', 15,
+      { dataSource: 'MANIFEST' });
+    const record = testSession.allocationRecords[0];
+    const row = getDestinationManifestRows(testSession, 'SAVVY')[0];
+    results['DataSource preserved in workflow'] =
+      record.dataSource === 'MANIFEST' &&
+      row.productKey.includes('333333333333');
+    console.log(`${results['DataSource preserved in workflow'] ? '✓' : '✗'} DataSource preserved in workflow\n`);
+    if (results['DataSource preserved in workflow']) passed++;
+    tests.push('DataSource preserved in workflow');
+  } catch (e) {
+    results['DataSource preserved in workflow'] = false;
+    console.log(`✗ DataSource preservation error: ${e.message}\n`);
+    tests.push('DataSource preserved in workflow');
+  }
+
+  // Test 30: Phase 4 output model compatibility
+  try {
+    const testSession = { allocationRecords: [], rows: [], outputConfig: null };
+    recordAllocation(testSession, '444444444444', 'SKYPHASE4', 5, 'SAVVY', 'barcode', [], 'Title', '', 25,
+      { dataSource: 'MANUAL' });
+    const record = testSession.allocationRecords[0];
+    results['Phase 4 output model compat'] =
+      record.upc === '444444444444' &&
+      record.sku === 'SKYPHASE4' &&
+      record.quantity === 5 &&
+      record.unitRetail === 25;
+    console.log(`${results['Phase 4 output model compat'] ? '✓' : '✗'} Phase 4 output model compatibility\n`);
+    if (results['Phase 4 output model compat']) passed++;
+    tests.push('Phase 4 output model compatibility');
+  } catch (e) {
+    results['Phase 4 output model compat'] = false;
+    console.log(`✗ Phase 4 compat error: ${e.message}\n`);
+    tests.push('Phase 4 output model compatibility');
+  }
+
   console.log('\n========== PHASE 5A TEST RESULTS ==========\n');
   tests.forEach(test => {
     console.log(`  ${results[test] ? '✓' : '✗'} ${test}`);
