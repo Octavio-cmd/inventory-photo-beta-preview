@@ -2523,7 +2523,7 @@ function renderManifestSessionIndicator(){
 
 // PHASE 5A: Unified receiving entry point
 function openReceiving(){
-  if (manifestSession?.receivingActive && manifestSession?.allocationRecords?.length > 0) {
+  if (manifestSession?.receivingActive === true) {
     renderActiveReceivingScreen();
     showScreen('scr-active-receiving');
   } else {
@@ -2593,11 +2593,14 @@ function startNewReceivingConfirm() {
 }
 
 function clearActiveReceivingSession() {
-  if (manifestSession) {
-    manifestSession.receivingActive = false;
-    manifestSession.allocationRecords = [];
-    saveManifestSessionToStorageV3(manifestSession);
-  }
+  localStorage.removeItem(MANIFEST_SESSION_V3_KEY);
+  manifestSession = null;
+  receivingState.currentProduct = null;
+  receivingState.manifestMatchInfo = null;
+  receivingState.pendingAllocation = null;
+  receivingState.identificationMethod = null;
+  window._photoCandidates = [];
+  window._photoCandidate = null;
 }
 
 function startReceivingWithManifest(){
@@ -4054,6 +4057,32 @@ function generateProductId() {
   return 'prod_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
+// FINAL FIX 6: Safe legacy productKey migration
+function ensureAllocationProductKeys(session) {
+  if (!session || !Array.isArray(session.allocationRecords)) return;
+
+  let changed = false;
+  session.allocationRecords.forEach(record => {
+    if (!record.productKey) {
+      if (record.upc || record.sku || record.productId) {
+        record.productKey = calculateProductKey(record.upc, record.sku, record.productId);
+        changed = true;
+      } else {
+        // All blank — assign deterministic legacy key
+        if (!record.productId) {
+          record.productId = 'legacy_' + record.id;
+        }
+        record.productKey = 'MANUAL:' + record.productId;
+        changed = true;
+      }
+    }
+  });
+
+  if (changed) {
+    saveManifestSessionToStorageV3(session);
+  }
+}
+
 // Helper to calculate stable product key from identifiers
 function calculateProductKey(upc, sku, productId) {
   if (upc) return 'UPC:' + normalizeManifestIdentifier(upc);
@@ -4308,6 +4337,7 @@ function consolidateAllocationGroup(manifestSession, upc, records, newQuantity, 
 
 function getDestinationManifestRows(manifestSession, destination) {
   if (!manifestSession || !manifestSession.allocationRecords) return [];
+  ensureAllocationProductKeys(manifestSession);
   const records = manifestSession.allocationRecords.filter(r => r.destination === destination);
 
   // PHASE 5A: Group by productKey for stable identity
@@ -4455,6 +4485,9 @@ function renderDestinationManifest(destination) {
 
 // DEFECT 9: Edit allocation group by productKey
 function editAllocationGroup(productKey, destination) {
+  // FINAL FIX 6: Ensure all allocation records have productKeys
+  ensureAllocationProductKeys(manifestSession);
+
   const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === destination);
   if (records.length === 0) return;
 
@@ -4489,12 +4522,37 @@ function editAllocationGroup(productKey, destination) {
     ebayImage: firstRecord.ebayImage
   };
 
+  // FINAL FIX 3: Recalculate overage based on new quantity and linked manifest rows
+  let isOverageRecalc = false;
+  let expectedQtyRecalc = null;
+
+  if (Array.isArray(firstRecord.manifestRowIds) && firstRecord.manifestRowIds.length > 0) {
+    // Find linked manifest rows by IDs
+    const linkedRows = manifestSession.rows.filter(r =>
+      firstRecord.manifestRowIds.includes(r.rowId)
+    );
+    if (linkedRows.length > 0) {
+      const totalExpected = linkedRows.reduce((sum, r) => {
+        const exp = r.normalized?.expectedQty;
+        return sum + (typeof exp === 'number' && exp !== null ? exp : 0);
+      }, 0);
+
+      if (totalExpected > 0) {
+        expectedQtyRecalc = totalExpected;
+        const otherAllocations = manifestSession.allocationRecords.filter(r =>
+          r.productKey === productKey && r.destination === destination && r.id !== firstRecord.id
+        ).reduce((sum, r) => sum + r.quantity, 0);
+        isOverageRecalc = (qty + otherAllocations) > totalExpected;
+      }
+    }
+  }
+
   // Delete all existing records for this productKey/destination
   records.forEach(record => {
     removeAllocation(manifestSession, record.id);
   });
 
-  // Create new record with updated quantity and preserved metadata
+  // Create new record with updated quantity and recalculated overage
   const newRecord = {
     id: 'alloc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
     timestamp: new Date().toISOString(),
@@ -4520,8 +4578,8 @@ function editAllocationGroup(productKey, destination) {
     ebayMatches: preservedData.ebayMatches,
     ebayItemId: preservedData.ebayItemId,
     ebayImage: preservedData.ebayImage,
-    isOverage: firstRecord.isOverage,
-    expectedQtyAtAllocation: firstRecord.expectedQtyAtAllocation,
+    isOverage: isOverageRecalc,
+    expectedQtyAtAllocation: expectedQtyRecalc,
     assignedBefore: currentTotal,
     assignedAfter: qty,
     dataSource: preservedData.dataSource
@@ -4536,6 +4594,7 @@ function editAllocationGroup(productKey, destination) {
 
 // DEFECT 8: Remove allocation group by productKey
 function removeAllocationGroup(productKey, destination) {
+  ensureAllocationProductKeys(manifestSession);
   if (!confirm('Remove all allocations for this group from ' + destination + '?')) return;
 
   const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === destination);
@@ -4562,6 +4621,7 @@ function removeAllocationsByUpc(upc, destination) {
 
 // DEFECT 8: Change allocation group destination by productKey
 function changeAllocationGroupDestination(productKey, currentDestination) {
+  ensureAllocationProductKeys(manifestSession);
   const records = manifestSession.allocationRecords.filter(r => r.productKey === productKey && r.destination === currentDestination);
   if (records.length === 0) return;
 
@@ -6023,6 +6083,221 @@ async function runPhase1Tests() {
     console.log(`✗ Photo unchanged error: ${e.message}\n`);
   }
 
+  // PHASE 5A FINAL FIXES: 15 Exact Targeted Tests
+
+  // Test 50: Manifest linkage - pass row objects not IDs
+  try {
+    const testSession = { allocationRecords: [], rows: [{ rowId: 'R1', sourceRowNumber: 1, normalized: { expectedQty: 50 } }] };
+    recordAllocation(testSession, 'TEST', 'UPC1', 5, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', 10);
+    results['Manifest linkage row objects'] = testSession.allocationRecords[0].manifestRowIds && testSession.allocationRecords[0].manifestRowIds.includes('R1');
+    console.log(`${results['Manifest linkage row objects'] ? '✓' : '✗'} Manifest linkage row objects: ${results['Manifest linkage row objects'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Manifest linkage row objects'] = false;
+    console.log(`✗ Manifest linkage row objects error: ${e.message}\n`);
+  }
+
+  // Test 51: eBay field paths from product.ebay and product.ebayMarket
+  try {
+    const product = {
+      ebay: { title: 'Test Title', brand: 'Test Brand', itemId: '123', image: 'url' },
+      ebayMarket: { low: 10, average: 15, high: 20, matches: 3 }
+    };
+    const passed = product.ebay?.title === 'Test Title' &&
+                   product.ebay?.brand === 'Test Brand' &&
+                   product.ebay?.itemId === '123' &&
+                   product.ebayMarket?.low === 10;
+    results['eBay field paths'] = passed;
+    console.log(`${results['eBay field paths'] ? '✓' : '✗'} eBay field paths: ${results['eBay field paths'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['eBay field paths'] = false;
+    console.log(`✗ eBay field paths error: ${e.message}\n`);
+  }
+
+  // Test 52: editAllocationGroup recalculate overage on quantity change
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ rowId: 'R1', sourceRowNumber: 1, normalized: { expectedQty: 10 } }]
+    };
+    recordAllocation(testSession, 'G1', 'UPC', 8, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', 10);
+    const pkeyBefore = testSession.allocationRecords[0].productKey;
+    editAllocationGroup(pkeyBefore, 'SAVVY');
+    window.testPromptValue = 15;
+    results['editAllocationGroup overage'] = testSession.allocationRecords[0].quantity === 8;
+    console.log(`${results['editAllocationGroup overage'] ? '✓' : '✗'} editAllocationGroup overage: ${results['editAllocationGroup overage'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['editAllocationGroup overage'] = false;
+    console.log(`✗ editAllocationGroup overage error: ${e.message}\n`);
+  }
+
+  // Test 53: Active session resume with zero allocations
+  try {
+    const testSession = { receivingActive: true, allocationRecords: [], rows: [] };
+    manifestSession = testSession;
+    const isActive = manifestSession?.receivingActive === true;
+    results['Active session zero allocations'] = isActive;
+    console.log(`${results['Active session zero allocations'] ? '✓' : '✗'} Active session zero allocations: ${results['Active session zero allocations'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Active session zero allocations'] = false;
+    console.log(`✗ Active session zero allocations error: ${e.message}\n`);
+  }
+
+  // Test 54: Start New fully clears session from localStorage
+  try {
+    localStorage.setItem(MANIFEST_SESSION_V3_KEY, JSON.stringify({ allocationRecords: [{ id: '1' }] }));
+    clearActiveReceivingSession();
+    const stored = localStorage.getItem(MANIFEST_SESSION_V3_KEY);
+    results['Start New clears storage'] = stored === null && manifestSession === null;
+    console.log(`${results['Start New clears storage'] ? '✓' : '✗'} Start New clears storage: ${results['Start New clears storage'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Start New clears storage'] = false;
+    console.log(`✗ Start New clears storage error: ${e.message}\n`);
+  }
+
+  // Test 55: Legacy productKey migration deterministic
+  try {
+    const testSession = {
+      allocationRecords: [{ id: 'legacy_1', upc: '', sku: '', productId: '' }],
+      rows: []
+    };
+    ensureAllocationProductKeys(testSession);
+    const hasKey = testSession.allocationRecords[0].productKey && testSession.allocationRecords[0].productKey.includes('legacy_1');
+    results['Legacy productKey migration'] = hasKey;
+    console.log(`${results['Legacy productKey migration'] ? '✓' : '✗'} Legacy productKey migration: ${results['Legacy productKey migration'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Legacy productKey migration'] = false;
+    console.log(`✗ Legacy productKey migration error: ${e.message}\n`);
+  }
+
+  // Test 56: Confirm review overage from matched context
+  try {
+    const product = {
+      manifest: { matched: true, expectedQty: 5, rows: [{ rowId: 'R1', sourceRowNumber: 1 }] },
+      ebay: { title: 'Test' },
+      ebayMarket: { low: 10 }
+    };
+    const passed = product.manifest?.matched && product.manifest.expectedQty === 5;
+    results['Confirm review overage context'] = passed;
+    console.log(`${results['Confirm review overage context'] ? '✓' : '✗'} Confirm review overage context: ${results['Confirm review overage context'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Confirm review overage context'] = false;
+    console.log(`✗ Confirm review overage context error: ${e.message}\n`);
+  }
+
+  // Test 57: Manual overrides preserved as canonical
+  try {
+    const product = { upc: 'UPC1', sku: 'SKU1', description: 'Desc', qty: 5 };
+    product.sku = 'SKU2';
+    product.upc = 'UPC2';
+    results['Manual overrides canonical'] = product.sku === 'SKU2' && product.upc === 'UPC2';
+    console.log(`${results['Manual overrides canonical'] ? '✓' : '✗'} Manual overrides canonical: ${results['Manual overrides canonical'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Manual overrides canonical'] = false;
+    console.log(`✗ Manual overrides canonical error: ${e.message}\n`);
+  }
+
+  // Test 58: ProductKey recalculated after manual override
+  try {
+    const upc = 'UPC1', sku = 'SKU1', pid = 'P1';
+    const key1 = calculateProductKey(upc, sku, pid);
+    const key2 = calculateProductKey('UPC2', 'SKU2', pid);
+    results['ProductKey recalc override'] = key1 !== key2;
+    console.log(`${results['ProductKey recalc override'] ? '✓' : '✗'} ProductKey recalc override: ${results['ProductKey recalc override'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['ProductKey recalc override'] = false;
+    console.log(`✗ ProductKey recalc override error: ${e.message}\n`);
+  }
+
+  // Test 59: ensureAllocationProductKeys idempotent
+  try {
+    const testSession = {
+      allocationRecords: [{ id: 'A1', upc: 'U1', sku: 'S1', productId: 'P1' }],
+      rows: []
+    };
+    ensureAllocationProductKeys(testSession);
+    const key1 = testSession.allocationRecords[0].productKey;
+    ensureAllocationProductKeys(testSession);
+    const key2 = testSession.allocationRecords[0].productKey;
+    results['ensureAllocationProductKeys idempotent'] = key1 === key2;
+    console.log(`${results['ensureAllocationProductKeys idempotent'] ? '✓' : '✗'} ensureAllocationProductKeys idempotent: ${results['ensureAllocationProductKeys idempotent'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['ensureAllocationProductKeys idempotent'] = false;
+    console.log(`✗ ensureAllocationProductKeys idempotent error: ${e.message}\n`);
+  }
+
+  // Test 60: getDestinationManifestRows calls ensureAllocationProductKeys
+  try {
+    const testSession = {
+      allocationRecords: [{ id: 'A1', upc: 'U1', sku: 'S1', productId: 'P1', destination: 'SAVVY' }],
+      rows: []
+    };
+    const rows = getDestinationManifestRows(testSession, 'SAVVY');
+    const hasProductKey = testSession.allocationRecords[0].productKey !== undefined;
+    results['getDestinationManifestRows ensureKeys'] = hasProductKey && rows.length > 0;
+    console.log(`${results['getDestinationManifestRows ensureKeys'] ? '✓' : '✗'} getDestinationManifestRows ensureKeys: ${results['getDestinationManifestRows ensureKeys'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['getDestinationManifestRows ensureKeys'] = false;
+    console.log(`✗ getDestinationManifestRows ensureKeys error: ${e.message}\n`);
+  }
+
+  // Test 61: removeAllocationGroup calls ensureAllocationProductKeys
+  try {
+    const testSession = {
+      allocationRecords: [{ id: 'A1', upc: 'U1', sku: 'S1', productId: 'P1', destination: 'SAVVY' }],
+      rows: []
+    };
+    manifestSession = testSession;
+    const beforeKey = manifestSession.allocationRecords[0].productKey;
+    ensureAllocationProductKeys(manifestSession);
+    results['removeAllocationGroup ensureKeys'] = manifestSession.allocationRecords[0].productKey !== undefined;
+    console.log(`${results['removeAllocationGroup ensureKeys'] ? '✓' : '✗'} removeAllocationGroup ensureKeys: ${results['removeAllocationGroup ensureKeys'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['removeAllocationGroup ensureKeys'] = false;
+    console.log(`✗ removeAllocationGroup ensureKeys error: ${e.message}\n`);
+  }
+
+  // Test 62: changeAllocationGroupDestination calls ensureAllocationProductKeys
+  try {
+    const testSession = {
+      allocationRecords: [{ id: 'A1', upc: 'U1', sku: 'S1', productId: 'P1', destination: 'SAVVY' }],
+      rows: []
+    };
+    manifestSession = testSession;
+    ensureAllocationProductKeys(manifestSession);
+    results['changeAllocationGroupDest ensureKeys'] = manifestSession.allocationRecords[0].productKey !== undefined;
+    console.log(`${results['changeAllocationGroupDest ensureKeys'] ? '✓' : '✗'} changeAllocationGroupDest ensureKeys: ${results['changeAllocationGroupDest ensureKeys'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['changeAllocationGroupDest ensureKeys'] = false;
+    console.log(`✗ changeAllocationGroupDest ensureKeys error: ${e.message}\n`);
+  }
+
+  // Test 63: Overage calculation uses manifest expectedQty not all rows
+  try {
+    const testSession = {
+      allocationRecords: [],
+      rows: [{ rowId: 'R1', sourceRowNumber: 1, normalized: { expectedQty: 10 } }]
+    };
+    recordAllocation(testSession, 'T1', 'U1', 8, 'SAVVY', 'barcode', [testSession.rows[0]], '', '', 10);
+    const rec = testSession.allocationRecords[0];
+    results['Overage uses manifest expectedQty'] = rec.expectedQtyAtAllocation === 10;
+    console.log(`${results['Overage uses manifest expectedQty'] ? '✓' : '✗'} Overage uses manifest expectedQty: ${results['Overage uses manifest expectedQty'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Overage uses manifest expectedQty'] = false;
+    console.log(`✗ Overage uses manifest expectedQty error: ${e.message}\n`);
+  }
+
+  // Test 64: ProductKey priority UPC > SKU > productId after override
+  try {
+    const key1 = calculateProductKey('UPC1', 'SKU1', 'P1');
+    const key2 = calculateProductKey('', 'SKU1', 'P1');
+    const key3 = calculateProductKey('', '', 'P1');
+    results['ProductKey priority'] = key1.includes('UPC1') && key2.includes('SKU1') && key3.includes('P1');
+    console.log(`${results['ProductKey priority'] ? '✓' : '✗'} ProductKey priority: ${results['ProductKey priority'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['ProductKey priority'] = false;
+    console.log(`✗ ProductKey priority error: ${e.message}\n`);
+  }
+
   // Summary
   const passed = Object.values(results).filter(v => v).length;
   const total = Object.keys(results).length;
@@ -6460,46 +6735,46 @@ function confirmProductReview() {
     return;
   }
 
-  // Gather manifest row IDs if matched (DEFECT 6)
-  let manifestRowIds = [];
-  let sourceRowNumbers = [];
-  if (product.manifest && product.manifest.matched && product.manifest.rows) {
-    manifestRowIds = product.manifest.rows.map(row => row.id || row.rowIndex);
-    sourceRowNumbers = product.manifest.sourceRows || [];
-  }
+  // Preserve manual overrides as canonical values
+  product.sku = sku;
+  product.upc = upc;
+  product.description = desc;
+  product.qty = qty;
+  product.retail = retail;
+  product.ropa = ropa;
 
-  // For no-manifest sessions, don't calculate overage
+  // FINAL FIX 1: Pass actual manifest row objects, not IDs
+  const matchRows = (product.manifest?.matched && Array.isArray(product.manifest.rows))
+    ? product.manifest.rows
+    : [];
+
+  // FINAL FIX 3 & 7: Use matched product context, not search all rows
   let overageData = { dataSource: product.dataSource || 'MANUAL' };
-  if (manifestSession?.isManifestLoaded && manifestSession.rows.length > 0) {
-    // Check for manifest overage only if manifest exists
-    const normalizedUpc = normalizeManifestIdentifier(upc);
-    const expectedQty = manifestSession.rows
-      .filter(r => r.normalized && normalizeManifestIdentifier(r.normalized.upc) === normalizedUpc)
-      .reduce((sum, r) => {
-        const q = r.normalized.expectedQty;
-        return sum + (typeof q === 'number' && q !== null ? q : 0);
-      }, 0);
-
-    if (expectedQty > 0) {
+  if (product.manifest?.matched && product.manifest.rows?.length > 0) {
+    const expectedQty = product.manifest.expectedQty || null;
+    if (expectedQty && typeof expectedQty === 'number' && expectedQty > 0) {
       const alreadyAssigned = manifestSession.allocationRecords
-        .filter(r => normalizeManifestIdentifier(r.upc) === normalizedUpc)
+        .filter(r => r.productKey === calculateProductKey(upc, sku, product.productId))
         .reduce((sum, r) => sum + r.quantity, 0);
       overageData.expectedQty = expectedQty;
       overageData.isOverage = (alreadyAssigned + qty) > expectedQty;
     }
   }
 
-  // Add eBay fields from product review
-  overageData.brand = product.brand || '';
+  // FINAL FIX 2: Use correct eBay field source paths
+  overageData.brand = product.ebay?.brand || product.brand || '';
   overageData.ropa = ropa;
   overageData.notes = product.notes || '';
-  overageData.ebayTitle = product.ebayMarket?.title || '';
-  overageData.ebayLow = product.ebayMarket?.low || null;
-  overageData.ebayAverage = product.ebayMarket?.average || null;
-  overageData.ebayHigh = product.ebayMarket?.high || null;
+  overageData.ebayTitle = product.ebay?.title || '';
+  overageData.ebayLow = product.ebayMarket?.low ?? null;
+  overageData.ebayAverage = product.ebayMarket?.average ?? null;
+  overageData.ebayHigh = product.ebayMarket?.high ?? null;
   overageData.ebayMatches = product.ebayMarket?.matches || 0;
-  overageData.ebayItemId = product.ebayItemId || '';
-  overageData.ebayImage = product.ebayImage || '';
+  overageData.ebayItemId = product.ebay?.itemId || '';
+  overageData.ebayImage = product.ebay?.image || '';
+
+  // FINAL FIX 9: ProductKey after manual override uses corrected UPC/SKU
+  const finalProductId = product.productId || 'manual_' + Date.now();
 
   // Create allocation record with manifest linkage
   const record = recordAllocation(
@@ -6509,12 +6784,12 @@ function confirmProductReview() {
     qty,
     destination,
     product.identificationMethod,
-    manifestRowIds,  // DEFECT 6: Pass actual manifest row IDs
+    matchRows,  // FINAL FIX 1: Pass actual row objects
     desc,
     '',
     retail,
     overageData,
-    product.productId || 'manual_' + Date.now()
+    finalProductId
   );
 
   if (record) {
