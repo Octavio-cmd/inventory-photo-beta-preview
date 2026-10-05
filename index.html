@@ -2523,7 +2523,7 @@ function renderManifestSessionIndicator(){
 
 // PHASE 5A: Unified receiving entry point
 function openReceiving(){
-  if (manifestSession?.receivingActive === true) {
+  if (hasActiveReceivingSession(manifestSession)) {
     renderActiveReceivingScreen();
     showScreen('scr-active-receiving');
   } else {
@@ -4145,11 +4145,11 @@ function ensureAllocationProductKeys(session) {
   let changed = false;
   session.allocationRecords.forEach(record => {
     if (!record.productKey) {
-      if (record.upc || record.sku || record.productId) {
-        record.productKey = calculateProductKey(record.upc, record.sku, record.productId);
+      const calculatedKey = calculateProductKey(record.upc, record.sku, record.productId);
+      if (calculatedKey) {
+        record.productKey = calculatedKey;
         changed = true;
       } else {
-        // All blank — assign deterministic legacy key
         if (!record.productId) {
           record.productId = 'legacy_' + record.id;
         }
@@ -6232,10 +6232,16 @@ async function runPhase1Tests() {
   try {
     const row = { rowId: 12, sourceRowNumber: 18, normalized: { upc: '001234567890', expectedQty: 5 } };
     const testSession = { allocationRecords: [], rows: [row] };
-    const testProduct = { ebay: { title: 'TEST TITLE', brand: 'TEST BRAND', itemId: '123ABC', image: 'img.jpg' }, ebayMarket: { low: 10, average: 15, high: 20, matches: 7 } };
-    recordAllocation(testSession, 'TEST', '', 5, 'SAVVY', 'barcode', [row], '', '', null, testProduct);
-    const allocRec = testSession.allocationRecords[0];
-    results['eBay payload persistence'] = allocRec && allocRec.ebayTitle === 'TEST TITLE' && allocRec.brand === 'TEST BRAND' && allocRec.ebayItemId === '123ABC' && allocRec.ebayLow === 10;
+    const product = {
+      dataSource: 'EBAY',
+      ebay: { title: 'TEST TITLE', brand: 'TEST BRAND', itemId: '123ABC', image: 'img.jpg' },
+      ebayMarket: { low: 10, average: 15, high: 20, matches: 7 },
+      notes: 'TEST NOTE'
+    };
+    const payload = buildReceivingSourcePayload(product, 'ROPA1');
+    recordAllocation(testSession, '00123', 'SKU1', 2, 'SAVVY', 'barcode', [], 'Description', '', 15, payload, 'P1');
+    const record = testSession.allocationRecords[0];
+    results['eBay payload persistence'] = record && record.ebayTitle === 'TEST TITLE' && record.brand === 'TEST BRAND' && record.ebayItemId === '123ABC' && record.ebayImage === 'img.jpg' && record.ebayLow === 10 && record.ebayAverage === 15 && record.ebayHigh === 20 && record.ebayMatches === 7 && record.ropa === 'ROPA1' && record.notes === 'TEST NOTE' && record.dataSource === 'EBAY';
     console.log(`${results['eBay payload persistence'] ? '✓' : '✗'} eBay payload persistence: ${results['eBay payload persistence'] ? 'PASS' : 'FAIL'}\n`);
   } catch (e) {
     results['eBay payload persistence'] = false;
@@ -6377,6 +6383,25 @@ async function runPhase1Tests() {
   } catch (e) {
     results['Legacy migration idempotent'] = false;
     console.log(`✗ Legacy migration idempotent error: ${e.message}\n`);
+  }
+
+  // Test 67: Normalized-empty UPC/SKU falls back to legacy key
+  try {
+    const session = {
+      allocationRecords: [
+        { id: 'weird', upc: '---', sku: '---', productId: '' }
+      ],
+      rows: []
+    };
+    ensureAllocationProductKeys(session);
+    const firstPass = session.allocationRecords[0].productId === 'legacy_weird' && session.allocationRecords[0].productKey === 'MANUAL:legacy_weird';
+    ensureAllocationProductKeys(session);
+    const secondPass = session.allocationRecords[0].productId === 'legacy_weird' && session.allocationRecords[0].productKey === 'MANUAL:legacy_weird';
+    results['Normalized-empty legacy fallback'] = firstPass && secondPass;
+    console.log(`${results['Normalized-empty legacy fallback'] ? '✓' : '✗'} Normalized-empty legacy fallback: ${results['Normalized-empty legacy fallback'] ? 'PASS' : 'FAIL'}\n`);
+  } catch (e) {
+    results['Normalized-empty legacy fallback'] = false;
+    console.log(`✗ Normalized-empty legacy fallback error: ${e.message}\n`);
   }
 
   // Summary
